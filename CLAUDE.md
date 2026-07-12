@@ -96,7 +96,8 @@ API = minor bump. v1.0.0 is retracted in go.mod (immediate post-release renames)
 History: v1.0.1 naming review, v1.0.2 dead code audit, v1.1.0 Continue, v1.2.0 Until,
 v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split, v1.3.0
 rename to serialize.go, v1.4.0 measure stream 32 bit fix + compat harness/CI
-hardening (minor bump: gorelease counts the added compat package). Tags up
+hardening (minor bump: gorelease counts the added compat package), v1.4.1 CI
+action bumps. Tags up
 to v1.2.3 predate the rename and declare the goserialize module path, so they are
 not fetchable as serialize.go — v1.3.0 is the first valid version of the new path
 (gorelease/apicompat cannot compare against the pre-rename tags). After
