@@ -1,3 +1,5 @@
 *.test
 *.out
 *.prof
+bench/cpp/bench
+bench/cpp/serialize.h

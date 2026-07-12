@@ -162,6 +162,104 @@ func BenchmarkReadStreamPacket(b *testing.B) {
 	}
 }
 
+// writePacketDirect serializes the packet against the concrete stream type, with no
+// interface dispatch. This is the fastest way to use the library, at the cost of
+// separate read and write functions.
+func writePacketDirect(s *WriteStream, p *benchPacket) error {
+	s.SerializeUint64(&p.sequence)
+	for i := range p.position {
+		s.SerializeCompressedFloat32(&p.position[i], -1024, 1024, 0.01)
+	}
+	for i := range p.orientation {
+		s.SerializeCompressedFloat32(&p.orientation[i], -1, 1, 0.0001)
+	}
+	s.SerializeInt(&p.health, 0, 1000)
+	s.SerializeBits(&p.weapon, 4)
+	for i := range p.ammo {
+		s.SerializeInt(&p.ammo[i], 0, 200)
+	}
+	s.SerializeBool(&p.firing)
+	s.SerializeInt(&p.events, 0, 16)
+	for i := int32(0); i < p.events; i++ {
+		s.SerializeBits(&p.eventIDs[i], 32)
+	}
+	s.SerializeBytes(p.payload[:])
+	return s.Err()
+}
+
+func readPacketDirect(s *ReadStream, p *benchPacket) error {
+	s.SerializeUint64(&p.sequence)
+	for i := range p.position {
+		s.SerializeCompressedFloat32(&p.position[i], -1024, 1024, 0.01)
+	}
+	for i := range p.orientation {
+		s.SerializeCompressedFloat32(&p.orientation[i], -1, 1, 0.0001)
+	}
+	s.SerializeInt(&p.health, 0, 1000)
+	s.SerializeBits(&p.weapon, 4)
+	for i := range p.ammo {
+		s.SerializeInt(&p.ammo[i], 0, 200)
+	}
+	s.SerializeBool(&p.firing)
+	s.SerializeInt(&p.events, 0, 16)
+	for i := int32(0); i < p.events; i++ {
+		s.SerializeBits(&p.eventIDs[i], 32)
+	}
+	s.SerializeBytes(p.payload[:])
+	return s.Err()
+}
+
+func BenchmarkWriteStreamPacketDirect(b *testing.B) {
+	buffer := make([]byte, 1024)
+	packet := &benchPacket{}
+	packet.init()
+
+	stream := NewWriteStream(buffer)
+	if err := writePacketDirect(stream, packet); err != nil {
+		b.Fatal(err)
+	}
+	stream.Flush()
+
+	b.SetBytes(stream.BytesProcessed())
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := writePacketDirect(stream, packet); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+func BenchmarkReadStreamPacketDirect(b *testing.B) {
+	buffer := make([]byte, 1024)
+	packet := &benchPacket{}
+	packet.init()
+
+	writeStream := NewWriteStream(buffer)
+	if err := writePacketDirect(writeStream, packet); err != nil {
+		b.Fatal(err)
+	}
+	writeStream.Flush()
+	data := writeStream.Data()
+
+	stream := NewReadStream(data)
+
+	b.SetBytes(writeStream.BytesProcessed())
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	readPacket := &benchPacket{}
+	for n := 0; n < b.N; n++ {
+		stream.Reset(data)
+		if err := readPacketDirect(stream, readPacket); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkMeasureStreamPacket(b *testing.B) {
 	packet := &benchPacket{}
 	packet.init()
