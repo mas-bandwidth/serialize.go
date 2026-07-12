@@ -1,9 +1,11 @@
-# goserialize
+# serialize.go
 
 Pure Go port of the C++ serialize library (github.com/mas-bandwidth/serialize).
-Module `github.com/mas-bandwidth/goserialize`, package name `serialize` (deliberate:
-short call sites, matches the C++ namespace; the import alias is documented in the
-README). Zero dependencies, no cgo, BSD-3.
+Module `github.com/mas-bandwidth/serialize.go`, package name `serialize` (deliberate:
+short call sites, matches the C++ namespace; no import alias needed, same pattern as
+nats.go). Zero dependencies, no cgo, BSD-3. Renamed from goserialize on 2026-07-12;
+the old module path is frozen — proxy-cached versions keep working, new versions are
+published only under serialize.go.
 
 ## Invariants — never break these
 
@@ -78,8 +80,11 @@ summary) and apicompat (gorelease vs the latest tag in the job summary).
 Semver tags; the apicompat CI job (gorelease) suggests the next version. New exported
 API = minor bump. v1.0.0 is retracted in go.mod (immediate post-release renames).
 History: v1.0.1 naming review, v1.0.2 dead code audit, v1.1.0 Continue, v1.2.0 Until,
-v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split. After
+v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split. Tags up
+to v1.2.3 predate the rename and declare the goserialize module path, so they are
+not fetchable as serialize.go — the first post-rename tag is the first valid version
+of the new path (gorelease/apicompat cannot compare against pre-rename tags). After
 tagging, prime the
-module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/goserialize/@v/<tag>.info`.
+module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/serialize.go/@v/<tag>.info`.
 Update benchmark numbers (docs/performance.md and the README headline figures) only
 from fresh runs on the stated hardware (Apple M3 Ultra) with the stated methodology.

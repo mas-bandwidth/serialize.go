@@ -3,7 +3,7 @@ package serialize_test
 import (
 	"fmt"
 
-	serialize "github.com/mas-bandwidth/goserialize"
+	"github.com/mas-bandwidth/serialize.go"
 )
 
 // Use the bitpacker directly when you want full control over each bit.

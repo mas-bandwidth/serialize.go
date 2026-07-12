@@ -1,8 +1,8 @@
 # Introduction
 
-[![CI](https://github.com/mas-bandwidth/goserialize/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/goserialize/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mas-bandwidth/goserialize.svg)](https://pkg.go.dev/github.com/mas-bandwidth/goserialize)
+[![CI](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mas-bandwidth/serialize.go.svg)](https://pkg.go.dev/github.com/mas-bandwidth/serialize.go)
 
-**goserialize** is a simple bitpacking serializer for Go.
+**serialize.go** is a simple bitpacking serializer for Go.
 
 It is a pure Go port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library, with no native code. The two libraries produce bit-for-bit identical output, so streams written by one language can be read by the other. This is pinned down by a golden wire format test whose bytes are copied verbatim from the C++ test suite.
 
@@ -20,13 +20,13 @@ It has the following features:
 # Usage
 
 ```
-go get github.com/mas-bandwidth/goserialize
+go get github.com/mas-bandwidth/serialize.go
 ```
 
-The package name is `serialize`:
+The package name is `serialize`, so no import alias is needed:
 
 ```go
-import serialize "github.com/mas-bandwidth/goserialize"
+import "github.com/mas-bandwidth/serialize.go"
 ```
 
 You can use the bitpacker directly:
@@ -157,7 +157,7 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 All serialization paths are zero allocation. On an Apple M3 Ultra the bitpacker writes and reads mixed width values at around 2.1ns per value, and a representative 133 byte game network packet serializes at around 10 million packets per second per core. Interface dispatch through `Stream` costs only 6-8% over the concrete stream types.
 
-The C++ serialize library is 2-6× faster on the same benchmarks, mostly because its release builds compile away the safety checks that goserialize deliberately keeps on in every build. Full benchmark numbers and the cross language comparison are in [docs/performance.md](docs/performance.md).
+The C++ serialize library is 2-6× faster on the same benchmarks, mostly because its release builds compile away the safety checks that serialize.go deliberately keeps on in every build. Full benchmark numbers and the cross language comparison are in [docs/performance.md](docs/performance.md).
 
 # Limitations
 

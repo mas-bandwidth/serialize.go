@@ -1,7 +1,7 @@
 /*
-    Benchmarks for the C++ serialize library, mirroring the goserialize Go benchmark
+    Benchmarks for the C++ serialize library, mirroring the serialize.go benchmark
     suite (bench_test.go) one for one, for the cross language comparison in the
-    goserialize docs/performance.md.
+    serialize.go docs/performance.md.
 
     Download serialize.h (v1.4.3) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
