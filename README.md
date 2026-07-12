@@ -128,7 +128,7 @@ That last property implies one rule that the C++ library enforces invisibly (its
 
 **A value that controls how much more work your serialize function does — a loop count or a continuation bit — must have its error checked before you use it.**
 
-Straight-line field sequences can defer checking to a single `stream.Err()` at the end. But a loop that waits for a serialized value to change will wait forever on a truncated packet, because failed reads never update values. That is a denial of service vector:
+Straight-line field sequences can defer checking to a single `stream.Err()` at the end. But a loop that waits for a serialized value to change will wait forever on a truncated packet, because failed reads never update values. That is a denial of service vector, and it bites in both bit polarities:
 
 ```go
 // WRONG: spins forever on a truncated packet.
@@ -138,9 +138,16 @@ for hasNext {
     stream.SerializeBool(&hasNext)
     // ... serialize an element ...
 }
+
+// WRONG for the same reason: done never becomes true.
+done := false
+for !done {
+    stream.SerializeBool(&done)
+    // ... serialize an element ...
+}
 ```
 
-For sentinel-driven loops, use `serialize.Continue`, which folds the stream error state into the loop condition in the style of `bufio.Scanner`:
+For sentinel-driven loops, use `serialize.Continue` (a true bit before each element) or `serialize.Until` (a true bit terminating the sequence), which fold the stream error state into the loop condition in the style of `bufio.Scanner`:
 
 ```go
 hasNext := len(items) > 0 // when writing: true if there is a first element
@@ -154,6 +161,14 @@ for serialize.Continue(stream, &hasNext) {
 }
 if err := stream.Err(); err != nil {
     return err
+}
+```
+
+The two helpers exist because the bit polarity is part of the wire format: when porting a protocol that already marks the end of a sequence with a true bit, use `Until` and keep the wire format unchanged. For any other loop whose condition depends on serialized state, include the error state in the condition yourself:
+
+```go
+for !done && stream.Err() == nil {
+    // ...
 }
 ```
 

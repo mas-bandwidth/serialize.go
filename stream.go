@@ -132,7 +132,7 @@ type Stream interface {
 // a loop count or a continuation bit — must have its error checked before you use it.
 // Once an error latches, serialize calls are no-ops that leave values unmodified, so a
 // loop waiting for a serialized value to change spins forever on a truncated or
-// malicious packet. Use Continue for sentinel-driven loops.
+// malicious packet. Use Continue or Until for sentinel-driven loops.
 type Serializer interface {
 	Serialize(stream Stream) error
 }
@@ -154,12 +154,39 @@ type Serializer interface {
 //
 // Never write the loop as `for hasNext { stream.SerializeBool(&hasNext); ... }`: once
 // the stream has an error the failed read leaves hasNext unmodified and the loop never
-// exits. See the README section on reading untrusted data.
+// exits. For wire formats with the opposite bit polarity — a termination bit rather
+// than a continuation bit — use Until. See the README section on reading untrusted data.
 func Continue(stream Stream, more *bool) bool {
 	if stream.SerializeBool(more) != nil {
 		return false
 	}
 	return *more
+}
+
+// Until serializes *done as a single termination bit and reports whether a
+// sentinel-driven loop should proceed. It is the inverse of Continue, for wire formats
+// that mark the end of a sequence with a true bit instead of marking each element with
+// a continuation bit — the polarity cannot be flipped without changing the wire format,
+// so both helpers exist. Like Continue, it returns false as soon as the stream has an
+// error, so loops of this form always terminate on truncated or malicious data, bounded
+// by the size of the packet.
+//
+//	done := ... // when writing: true if the sequence is empty
+//	for serialize.Until(stream, &done) {
+//	    // serialize one element
+//	    // when writing: set done = true after the last element
+//	}
+//	if err := stream.Err(); err != nil {
+//	    return err
+//	}
+//
+// Never write the loop as `for !done { stream.SerializeBool(&done); ... }`: once the
+// stream has an error the failed read leaves done unmodified and the loop never exits.
+func Until(stream Stream, done *bool) bool {
+	if stream.SerializeBool(done) != nil {
+		return false
+	}
+	return !*done
 }
 
 // Interface conformance.
