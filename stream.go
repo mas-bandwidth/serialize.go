@@ -13,7 +13,7 @@ import "math"
 //
 // Errors are sticky: the first failure latches on the stream and every later serialize
 // call returns it without touching the stream, so you can either check every call or
-// serialize a whole object and check Error once at the end.
+// serialize a whole object and check Err once at the end.
 type Stream interface {
 	// IsWriting returns true if the stream writes or measures values (WriteStream and
 	// MeasureStream), and false if it reads them.
@@ -87,8 +87,8 @@ type Stream interface {
 	// the padding is verified to be zero.
 	SerializeAlign() error
 
-	// SerializeObject serializes an object that implements Serializable.
-	SerializeObject(object Serializable) error
+	// SerializeObject serializes an object that implements Serializer.
+	SerializeObject(object Serializer) error
 
 	// SerializeIntRelative serializes an integer relative to a previous integer, using
 	// fewer bits the closer the two values are. previous must be less than current.
@@ -106,25 +106,26 @@ type Stream interface {
 	// After writing, this is effectively the packet size.
 	BytesProcessed() int64
 
-	// Error returns the first error latched on the stream, or nil.
-	Error() error
+	// Err returns the first error latched on the stream, or nil.
+	Err() error
 
 	// SetContext sets a context value on the stream. The context lets you pass data
 	// through to your serialize functions, for example lookup tables or min/max ranges
-	// needed to read and write values.
+	// needed to read and write values. It mirrors the context pointer in the C++
+	// library and is unrelated to context.Context.
 	SetContext(context any)
 
 	// Context returns the context value set on the stream. It may be nil.
 	Context() any
 }
 
-// Serializable is the interface implemented by objects that serialize themselves to a
+// Serializer is the interface implemented by objects that serialize themselves to a
 // stream. Write one Serialize method per type and it works for write, read and measure.
 //
 // Return an error to abort serialization: the standard pattern is to call serialize
-// methods for each field and return stream.Error() at the end, adding your own
+// methods for each field and return stream.Err() at the end, adding your own
 // validation errors where needed.
-type Serializable interface {
+type Serializer interface {
 	Serialize(stream Stream) error
 }
 

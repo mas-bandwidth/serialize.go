@@ -229,7 +229,7 @@ func (w *BitWriter) Data() []byte {
 // a buffer before use.
 type BitReader struct {
 	data     []byte
-	window   []byte
+	padded   []byte
 	numBits  int64
 	bitsRead int64
 }
@@ -247,7 +247,7 @@ func NewBitReader(data []byte) *BitReader {
 // single reader to be reused without allocation.
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
-	r.window = data[:cap(data)]
+	r.padded = data[:cap(data)]
 	r.numBits = int64(len(data)) * 8
 	r.bitsRead = 0
 }
@@ -259,13 +259,13 @@ func (r *BitReader) readBits(bits int) uint32 {
 	byteIndex := int(r.bitsRead >> 3)
 
 	var window uint64
-	if byteIndex+8 <= len(r.window) {
-		window = binary.LittleEndian.Uint64(r.window[byteIndex:])
+	if byteIndex+8 <= len(r.padded) {
+		window = binary.LittleEndian.Uint64(r.padded[byteIndex:])
 	} else {
 		// near the end of a buffer whose backing array has no slack past the data:
 		// assemble the window from the remaining bytes
-		for i := len(r.window) - byteIndex - 1; i >= 0; i-- {
-			window = window<<8 | uint64(r.window[byteIndex+i])
+		for i := len(r.padded) - byteIndex - 1; i >= 0; i-- {
+			window = window<<8 | uint64(r.padded[byteIndex+i])
 		}
 	}
 

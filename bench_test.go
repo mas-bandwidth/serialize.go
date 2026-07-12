@@ -108,7 +108,7 @@ func (p *benchPacket) Serialize(stream Stream) error {
 		stream.SerializeBits(&p.eventIDs[i], 32)
 	}
 	stream.SerializeBytes(p.payload[:])
-	return stream.Error()
+	return stream.Err()
 }
 
 func BenchmarkWriteStreamPacket(b *testing.B) {

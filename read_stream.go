@@ -312,8 +312,8 @@ func (s *ReadStream) SerializeAlign() error {
 	return nil
 }
 
-// SerializeObject reads an object that implements Serializable.
-func (s *ReadStream) SerializeObject(object Serializable) error {
+// SerializeObject reads an object that implements Serializer.
+func (s *ReadStream) SerializeObject(object Serializer) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -379,8 +379,8 @@ func (s *ReadStream) BytesProcessed() int64 {
 	return (s.reader.BitsRead() + 7) / 8
 }
 
-// Error returns the first error latched on the stream, or nil.
-func (s *ReadStream) Error() error {
+// Err returns the first error latched on the stream, or nil.
+func (s *ReadStream) Err() error {
 	return s.err
 }
 

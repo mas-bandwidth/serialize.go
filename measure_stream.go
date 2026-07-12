@@ -176,8 +176,8 @@ func (s *MeasureStream) SerializeAlign() error {
 	return s.measure(s.AlignBits())
 }
 
-// SerializeObject measures an object that implements Serializable.
-func (s *MeasureStream) SerializeObject(object Serializable) error {
+// SerializeObject measures an object that implements Serializer.
+func (s *MeasureStream) SerializeObject(object Serializer) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -233,8 +233,8 @@ func (s *MeasureStream) BytesProcessed() int64 {
 	return (s.bitsWritten + 7) / 8
 }
 
-// Error returns the first error latched on the stream, or nil.
-func (s *MeasureStream) Error() error {
+// Err returns the first error latched on the stream, or nil.
+func (s *MeasureStream) Err() error {
 	return s.err
 }
 

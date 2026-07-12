@@ -87,7 +87,7 @@ func FuzzRoundTrip(f *testing.F) {
 		writeStream.SerializeFloat64(&f64)
 		writeStream.SerializeString(&str, 256)
 		writeStream.SerializeBytes(bulk)
-		if err := writeStream.Error(); err != nil {
+		if err := writeStream.Err(); err != nil {
 			t.Fatalf("write failed: %v", err)
 		}
 		writeStream.Flush()
@@ -109,7 +109,7 @@ func FuzzRoundTrip(f *testing.F) {
 		readStream.SerializeFloat64(&rf64)
 		readStream.SerializeString(&rstr, 256)
 		readStream.SerializeBytes(rbulk)
-		if err := readStream.Error(); err != nil {
+		if err := readStream.Err(); err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
 

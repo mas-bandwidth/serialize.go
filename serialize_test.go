@@ -246,7 +246,7 @@ func (o *testObject) Serialize(stream Stream) error {
 	stream.SerializeString(&o.data.str, 256)
 	stream.SerializeWideString(&o.data.wstr, 256)
 
-	return stream.Error()
+	return stream.Err()
 }
 
 func TestSerialize(t *testing.T) {
@@ -434,7 +434,7 @@ func TestReadWrite(t *testing.T) {
 	relative := int32(105)
 	writeStream.SerializeIntRelative(100, &relative)
 
-	if err := writeStream.Error(); err != nil {
+	if err := writeStream.Err(); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 
@@ -460,7 +460,7 @@ func TestSerializeIntegerValidation(t *testing.T) {
 	if err := readStream.SerializeInt(&value, 0, 5); !errors.Is(err, ErrValueOutOfRange) {
 		t.Fatalf("expected ErrValueOutOfRange, got %v", err)
 	}
-	if !errors.Is(readStream.Error(), ErrValueOutOfRange) {
+	if !errors.Is(readStream.Err(), ErrValueOutOfRange) {
 		t.Fatal("expected the error to latch on the stream")
 	}
 }
@@ -865,7 +865,7 @@ func goldenWireSerialize(stream Stream, data *goldenWireData) error {
 	stream.SerializeBytes(data.bytes[:])
 	stream.SerializeString(&data.str, 16)
 	stream.SerializeWideString(&data.wstr, 8)
-	return stream.Error()
+	return stream.Err()
 }
 
 // goldenWireBytes are copied verbatim from the C++ serialize library test suite.
@@ -940,7 +940,7 @@ func TestUnalignedWriter(t *testing.T) {
 		writeStream.SerializeBytes(data)
 		c := uint32(0xDEADBEEF)
 		writeStream.SerializeBits(&c, 32)
-		if err := writeStream.Error(); err != nil {
+		if err := writeStream.Err(); err != nil {
 			t.Fatal(err)
 		}
 		writeStream.Flush()
@@ -1052,7 +1052,7 @@ func TestWriteOverflow(t *testing.T) {
 	if err := stream.SerializeBool(&flag); !errors.Is(err, ErrOverflow) {
 		t.Fatalf("expected sticky ErrOverflow, got %v", err)
 	}
-	if !errors.Is(stream.Error(), ErrOverflow) {
+	if !errors.Is(stream.Err(), ErrOverflow) {
 		t.Fatal("expected the error to latch on the stream")
 	}
 	if stream.BitsProcessed() != 64 {
@@ -1192,7 +1192,7 @@ func TestMeasureStream(t *testing.T) {
 		stream.SerializeCompressedFloat32(&f, 0, 10, 0.01)
 		relative := int32(105)
 		stream.SerializeIntRelative(100, &relative)
-		if err := stream.Error(); err != nil {
+		if err := stream.Err(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1216,7 +1216,7 @@ func TestSerializeObjectErrorPropagation(t *testing.T) {
 	if err := stream.SerializeObject(&failingObject{}); !errors.Is(err, errCustomValidation) {
 		t.Fatalf("expected custom error, got %v", err)
 	}
-	if !errors.Is(stream.Error(), errCustomValidation) {
+	if !errors.Is(stream.Err(), errCustomValidation) {
 		t.Fatal("expected the custom error to latch on the stream")
 	}
 }
@@ -1252,7 +1252,7 @@ func TestStreamReset(t *testing.T) {
 		t.Fatal("expected ErrOverflow on empty buffer")
 	}
 	readStream.Reset(writeStream.Data())
-	if readStream.Error() != nil {
+	if readStream.Err() != nil {
 		t.Fatal("expected Reset to clear the error")
 	}
 	if err := readStream.SerializeBits(&value, 16); err != nil || value != 0x1234 {

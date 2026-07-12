@@ -276,8 +276,8 @@ func (s *WriteStream) SerializeAlign() error {
 	return s.writeBits(0, alignBits)
 }
 
-// SerializeObject writes an object that implements Serializable.
-func (s *WriteStream) SerializeObject(object Serializable) error {
+// SerializeObject writes an object that implements Serializer.
+func (s *WriteStream) SerializeObject(object Serializer) error {
 	if s.err != nil {
 		return s.err
 	}
@@ -349,8 +349,8 @@ func (s *WriteStream) BytesProcessed() int64 {
 	return s.writer.BytesWritten()
 }
 
-// Error returns the first error latched on the stream, or nil.
-func (s *WriteStream) Error() error {
+// Err returns the first error latched on the stream, or nil.
+func (s *WriteStream) Err() error {
 	return s.err
 }
 
