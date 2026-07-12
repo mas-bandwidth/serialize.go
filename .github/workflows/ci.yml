@@ -174,7 +174,7 @@ jobs:
           go-version: stable
           cache: false
       - name: fuzz corpus cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build/fuzz
           # run_id keys never hit exactly, so every run restores the newest
