@@ -30,7 +30,11 @@
 // Values read from a stream are untrusted network data: every read is bounds checked and
 // range validated, and the first failure latches an error on the stream. Serialize methods
 // return that error and become no-ops once it is set, so you can either check each call or
-// serialize an entire object and check Stream.Err once at the end.
+// serialize an entire object and check Stream.Err once at the end — with one rule: a value
+// that controls a loop must have its error checked before the loop uses it, because after
+// an error values are never updated again and a loop waiting for one spins forever on a
+// truncated or malicious packet. Use Continue for sentinel-driven loops, and check the
+// error on serialized loop counts.
 package serialize
 
 import (

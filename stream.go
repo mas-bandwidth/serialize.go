@@ -13,7 +13,9 @@ import "math"
 //
 // Errors are sticky: the first failure latches on the stream and every later serialize
 // call returns it without touching the stream, so you can either check every call or
-// serialize a whole object and check Err once at the end.
+// serialize a whole object and check Err once at the end. The one rule: a value that
+// controls a loop must have its error checked before the loop runs, because after an
+// error the value is never updated again. See Continue and the Serializer documentation.
 type Stream interface {
 	// IsWriting returns true if the stream writes or measures values (WriteStream and
 	// MeasureStream), and false if it reads them.
@@ -125,8 +127,39 @@ type Stream interface {
 // Return an error to abort serialization: the standard pattern is to call serialize
 // methods for each field and return stream.Err() at the end, adding your own
 // validation errors where needed.
+//
+// IMPORTANT: A value that controls how much more work your serialize function does —
+// a loop count or a continuation bit — must have its error checked before you use it.
+// Once an error latches, serialize calls are no-ops that leave values unmodified, so a
+// loop waiting for a serialized value to change spins forever on a truncated or
+// malicious packet. Use Continue for sentinel-driven loops.
 type Serializer interface {
 	Serialize(stream Stream) error
+}
+
+// Continue serializes *more as a single continuation bit and reports whether a
+// sentinel-driven loop should proceed, folding the stream error state into the loop
+// condition in the style of bufio.Scanner: it returns false as soon as the stream has
+// an error, so loops of this form always terminate on truncated or malicious data,
+// bounded by the size of the packet.
+//
+//	hasNext := ... // when writing: true if there is a first element
+//	for serialize.Continue(stream, &hasNext) {
+//	    // serialize one element
+//	    // when writing: set hasNext = true if there is another element
+//	}
+//	if err := stream.Err(); err != nil {
+//	    return err
+//	}
+//
+// Never write the loop as `for hasNext { stream.SerializeBool(&hasNext); ... }`: once
+// the stream has an error the failed read leaves hasNext unmodified and the loop never
+// exits. See the README section on reading untrusted data.
+func Continue(stream Stream, more *bool) bool {
+	if stream.SerializeBool(more) != nil {
+		return false
+	}
+	return *more
 }
 
 // Interface conformance.

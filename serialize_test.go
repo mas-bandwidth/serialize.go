@@ -224,7 +224,11 @@ func (o *testObject) Serialize(stream Stream) error {
 
 	stream.SerializeBool(&o.data.g)
 
-	stream.SerializeInt(&o.data.numItems, 0, maxItems-1)
+	// numItems controls the loop below, so its error must be checked before the loop:
+	// on a truncated packet the failed read leaves the previous value in place
+	if err := stream.SerializeInt(&o.data.numItems, 0, maxItems-1); err != nil {
+		return err
+	}
 	for i := int32(0); i < o.data.numItems; i++ {
 		item := uint32(o.data.items[i])
 		stream.SerializeBits(&item, 8)
@@ -1206,6 +1210,115 @@ func TestMeasureStream(t *testing.T) {
 	if measureStream.BitsProcessed() != writeStream.BitsProcessed() {
 		t.Fatalf("expected exact measurement: measured %d bits, wrote %d bits",
 			measureStream.BitsProcessed(), writeStream.BitsProcessed())
+	}
+}
+
+func TestContinue(t *testing.T) {
+	// round trip a variable length sequence with a continuation bit per element
+	buffer := make([]byte, 64)
+	items := []uint32{10, 20, 30, 40, 50}
+
+	writeStream := NewWriteStream(buffer)
+	{
+		i := 0
+		hasNext := len(items) > 0
+		for Continue(writeStream, &hasNext) {
+			writeStream.SerializeBits(&items[i], 8)
+			i++
+			hasNext = i < len(items)
+		}
+	}
+	if err := writeStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+
+	readStream := NewReadStream(writeStream.Data())
+	var read []uint32
+	hasNext := true
+	for Continue(readStream, &hasNext) {
+		var item uint32
+		readStream.SerializeBits(&item, 8)
+		read = append(read, item)
+	}
+	if err := readStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != len(items) {
+		t.Fatalf("expected %d items, got %d", len(items), len(read))
+	}
+	for i := range items {
+		if read[i] != items[i] {
+			t.Fatalf("item %d: expected %d, got %d", i, items[i], read[i])
+		}
+	}
+}
+
+func TestSentinelLoopTermination(t *testing.T) {
+	// a malicious packet of 0xFF bytes claims "another element follows" forever.
+	// because every successful serialize call consumes at least one bit, a Continue
+	// loop is bounded by the bit count of the packet and terminates with ErrOverflow.
+	{
+		malicious := bytes.Repeat([]byte{0xFF}, 32)
+
+		stream := NewReadStream(malicious)
+		iterations := 0
+		hasNext := true
+		for Continue(stream, &hasNext) {
+			var item uint32
+			stream.SerializeBits(&item, 8)
+			iterations++
+		}
+		if !errors.Is(stream.Err(), ErrOverflow) {
+			t.Fatalf("expected ErrOverflow, got %v", stream.Err())
+		}
+		if iterations > len(malicious)*8 {
+			t.Fatalf("loop ran %d iterations, more than the bit count of the packet", iterations)
+		}
+	}
+
+	// a packet truncated in the middle of a sequence also terminates with an error
+	{
+		buffer := make([]byte, 64)
+		writeStream := NewWriteStream(buffer)
+		items := []uint32{1, 2, 3, 4, 5}
+		i := 0
+		hasNext := len(items) > 0
+		for Continue(writeStream, &hasNext) {
+			writeStream.SerializeBits(&items[i], 32)
+			i++
+			hasNext = i < len(items)
+		}
+		writeStream.Flush()
+
+		truncated := writeStream.Data()[:2]
+
+		stream := NewReadStream(truncated)
+		hasNext = true
+		for Continue(stream, &hasNext) {
+			var item uint32
+			stream.SerializeBits(&item, 32)
+		}
+		if !errors.Is(stream.Err(), ErrOverflow) {
+			t.Fatalf("expected ErrOverflow, got %v", stream.Err())
+		}
+	}
+
+	// the unguarded pattern documented as WRONG in the README really does spin: after
+	// the first failure the no-op reads never update hasNext. capped here to keep the
+	// demonstration finite. if a future change makes this loop terminate on its own,
+	// this test will fail and the documentation should be revisited.
+	{
+		stream := NewReadStream([]byte{})
+		hasNext := true
+		spins := 0
+		for hasNext && spins < 10000 {
+			stream.SerializeBool(&hasNext) // no-op after the first failure
+			spins++
+		}
+		if spins != 10000 {
+			t.Fatal("expected the unguarded sentinel loop to spin until the cap")
+		}
 	}
 }
 
