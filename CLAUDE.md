@@ -22,7 +22,7 @@ README). Zero dependencies, no cgo, BSD-3.
    error checked before use, or the loop spins forever on truncated packets — a DoS.
    `Continue` (continuation-bit polarity) and `Until` (termination-bit polarity) are
    the safe sentinel loop primitives; both polarities are needed because the polarity
-   is part of the wire format. See the README "Reading untrusted data" section.
+   is part of the wire format. See docs/reading_untrusted_data.md.
 4. **Zero allocations on all serialization paths.** Benchmarks assert with
    ReportAllocs.
 5. **Write buffers must be multiples of 8 bytes** (the writer stores qwords). The
@@ -40,7 +40,9 @@ README). Zero dependencies, no cgo, BSD-3.
   streams; methods are implemented per stream (no shared dispatch) for speed
 - `serialize_test.go` — ported C++ test suite + golden wire test + DoS termination tests
 - `fuzz_test.go`, `bench_test.go`, `example_test.go` (examples ported from example.cpp)
-- `bench/cpp/bench.cpp` — C++ comparison benchmark (results + analysis in README)
+- `bench/cpp/bench.cpp` — C++ comparison benchmark (results + analysis in docs/performance.md)
+- `docs/` — full treatments of reading untrusted data and performance/C++ comparison;
+  the README keeps condensed versions that link here
 
 ## Commands
 
@@ -76,7 +78,8 @@ summary) and apicompat (gorelease vs the latest tag in the job summary).
 Semver tags; the apicompat CI job (gorelease) suggests the next version. New exported
 API = minor bump. v1.0.0 is retracted in go.mod (immediate post-release renames).
 History: v1.0.1 naming review, v1.0.2 dead code audit, v1.1.0 Continue, v1.2.0 Until,
-v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md. After tagging, prime the
+v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split. After
+tagging, prime the
 module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/goserialize/@v/<tag>.info`.
-Update README benchmark numbers only from fresh runs on the stated hardware
-(Apple M3 Ultra) with the stated methodology.
+Update benchmark numbers (docs/performance.md and the README headline figures) only
+from fresh runs on the stated hardware (Apple M3 Ultra) with the stated methodology.

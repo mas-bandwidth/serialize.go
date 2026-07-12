@@ -1383,8 +1383,9 @@ func TestSentinelLoopTermination(t *testing.T) {
 		}
 	}
 
-	// the unguarded patterns documented as WRONG in the README really do spin, in both
-	// polarities: after the first failure the no-op reads never update the sentinel.
+	// the unguarded patterns documented as WRONG in docs/reading_untrusted_data.md
+	// really do spin, in both polarities: after the first failure the no-op reads
+	// never update the sentinel.
 	// capped here to keep the demonstration finite. if a future change makes these
 	// loops terminate on their own, this test will fail and the documentation should
 	// be revisited.
