@@ -930,7 +930,7 @@ func TestUnalignedWriter(t *testing.T) {
 	// covering the WriteBits, WriteBytes and FlushBits store paths
 	storage := make([]byte, 256+8)
 
-	for offset := 0; offset < 8; offset++ {
+	for offset := range 8 {
 		for i := range storage {
 			storage[i] = 0
 		}
@@ -995,7 +995,7 @@ func TestLargeBuffer(t *testing.T) {
 	const numChunks = 300 // 300 MB of bulk data: past the 256 MB boundary
 
 	writeStream := NewWriteStream(buffer)
-	for i := 0; i < numChunks; i++ {
+	for range numChunks {
 		if err := writeStream.SerializeBytes(chunk); err != nil {
 			t.Fatal(err)
 		}
@@ -1015,7 +1015,7 @@ func TestLargeBuffer(t *testing.T) {
 
 	readStream := NewReadStream(writeStream.Data())
 	readChunk := make([]byte, len(chunk))
-	for i := 0; i < numChunks; i++ {
+	for range numChunks {
 		if err := readStream.SerializeBytes(readChunk); err != nil {
 			t.Fatal(err)
 		}

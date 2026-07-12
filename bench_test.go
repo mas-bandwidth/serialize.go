@@ -10,7 +10,7 @@ func BenchmarkBitWriterWriteBits(b *testing.B) {
 
 	const numValues = 1024
 	totalBits := 0
-	for i := 0; i < numValues; i++ {
+	for i := range numValues {
 		totalBits += i%32 + 1
 	}
 
@@ -20,7 +20,7 @@ func BenchmarkBitWriterWriteBits(b *testing.B) {
 
 	for n := 0; n < b.N; n++ {
 		writer.Reset(buffer)
-		for i := 0; i < numValues; i++ {
+		for i := range numValues {
 			writer.WriteBits(uint32(i)*2654435761, i%32+1)
 		}
 		writer.FlushBits()
@@ -33,7 +33,7 @@ func BenchmarkBitReaderReadBits(b *testing.B) {
 
 	const numValues = 1024
 	totalBits := 0
-	for i := 0; i < numValues; i++ {
+	for i := range numValues {
 		writer.WriteBits(uint32(i)*2654435761, i%32+1)
 		totalBits += i%32 + 1
 	}
@@ -48,7 +48,7 @@ func BenchmarkBitReaderReadBits(b *testing.B) {
 	var sum uint32
 	for n := 0; n < b.N; n++ {
 		reader.Reset(writer.Data())
-		for i := 0; i < numValues; i++ {
+		for i := range numValues {
 			sum += reader.ReadBits(i%32 + 1)
 		}
 	}

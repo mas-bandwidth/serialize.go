@@ -117,11 +117,8 @@ func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
 
 	n := int64(len(data))
 
-	headBytes := (8 - (w.bitsWritten%64)/8) % 8
-	if headBytes > n {
-		headBytes = n
-	}
-	for i := int64(0); i < headBytes; i++ {
+	headBytes := min((8-(w.bitsWritten%64)/8)%8, n)
+	for i := range headBytes {
 		w.writeBits(uint32(data[i]), 8)
 	}
 	if headBytes == n {
