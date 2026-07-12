@@ -1040,6 +1040,17 @@ func TestLargeBuffer(t *testing.T) {
 	if readStream.BitsProcessed() <= 1<<31 {
 		t.Fatal("expected the read bit count to cross the 2^31 boundary")
 	}
+
+	// measuring a single block of 256 MB or more crosses 2^31 bits in one call: the
+	// multiply must happen in the 64 bit domain even where int is 32 bits
+	const measureBytes = 270 * 1024 * 1024
+	measureStream := NewMeasureStream()
+	if err := measureStream.SerializeBytes(buffer[:measureBytes]); err != nil {
+		t.Fatal(err)
+	}
+	if expected := int64(7) + int64(measureBytes)*8; measureStream.BitsProcessed() != expected {
+		t.Fatalf("expected %d measured bits, got %d", expected, measureStream.BitsProcessed())
+	}
 }
 
 func TestWriteOverflow(t *testing.T) {

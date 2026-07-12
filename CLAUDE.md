@@ -11,9 +11,13 @@ published only under serialize.go.
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
    `TestGoldenWireFormat` pins 72 golden bytes copied verbatim from the C++ test
-   suite, and `bench/cpp/bench.cpp` asserts the benchmark packet is byte identical.
-   Never change any encoding without coordinating with the C++ library. When adding
-   serialization features, port them from serialize.h and mirror its tests.
+   suite, `bench/cpp/bench.cpp` asserts the benchmark packet is byte identical, and
+   the cppcompat CI job round trips the `compat/` harness against the real C++
+   library (pinned serialize.h) on every push and PR: the Go and C++ streams must
+   be byte identical and each side must decode the other's. Never change any
+   encoding without coordinating with the C++ library. When adding serialization
+   features, port them from serialize.h, mirror its tests, and extend the compat
+   harness (both halves).
 2. **Malicious packet data never panics.** Every stream read is bounds checked and
    range validated and fails with an error. Panics are reserved for API misuse only
    (bits out of [1,32]/[1,64], min >= max, write buffer not a multiple of 8 bytes).
@@ -43,6 +47,8 @@ published only under serialize.go.
 - `serialize_test.go` — ported C++ test suite + golden wire test + DoS termination tests
 - `fuzz_test.go`, `bench_test.go`, `example_test.go` (examples ported from example.cpp)
 - `bench/cpp/bench.cpp` — C++ comparison benchmark (results + analysis in docs/performance.md)
+- `compat/` — cross language wire compat harness (`main.go` + `cpp/compat.cpp`, kept
+  in lockstep), run by the cppcompat CI job
 - `docs/` — full treatments of reading untrusted data and performance/C++ comparison;
   the README keeps condensed versions that link here
 
@@ -57,6 +63,7 @@ published only under serialize.go.
   (the documented sticky-error pattern leaves calls unchecked there)
 - `go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...`
 - C++ comparison: see the header comment in `bench/cpp/bench.cpp`
+- C++ wire compat harness: see the header comment in `compat/cpp/compat.cpp`
 
 ## CI (.github/workflows/ci.yml)
 
@@ -65,7 +72,8 @@ ubuntu leg on the go.mod minimum; race + shuffle + full + bench smoke), lint
 (golangci-lint — version pinned in ci.yml, bump deliberately — + modernize +
 `go mod tidy -diff`), vuln (govulncheck), cross (linux/386 full tests — 32 bit
 `int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 build
-checks), coverage (func table in the job summary), fuzz (30s per target on
+checks), cppcompat (Go ↔ C++ byte-identical round trip against the pinned C++
+serialize.h), coverage (func table in the job summary), fuzz (30s per target on
 push/PR; the weekly run fuzzes 10m per target, and the corpus persists across
 runs via actions/cache). Dependabot bumps action versions weekly.
 

@@ -12,8 +12,12 @@ linters:
   exclusions:
     rules:
       # the documented sticky error pattern intentionally leaves serialize call
-      # errors unchecked in straight-line test and example code
+      # errors unchecked in straight-line test and example code, and in the
+      # cross language compat harness
       - path: _test\.go
+        linters:
+          - errcheck
+      - path: ^compat/
         linters:
           - errcheck
 

@@ -62,7 +62,7 @@ const (
 	panicBitsRange     = "serialize: bits must be in [1,32]"
 	panicBitsRange64   = "serialize: bits must be in [1,64]"
 	panicMinMax        = "serialize: min must be less than max"
-	panicBufferSize    = "serialize: string buffer size must be in [2,1<<31]"
+	panicBufferSize    = "serialize: string buffer size must be in [2,1<<31)"
 	panicFloatParams   = "serialize: compressed float requires min < max and resolution > 0"
 	panicWriteOverflow = "serialize: bit writer overflow"
 	panicReadOverflow  = "serialize: bit reader would read past the end of the buffer"

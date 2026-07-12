@@ -82,13 +82,34 @@ jobs:
           go-version: stable
           cache: false
       - name: test on a 32 bit platform (int is 32 bits, bit counts must stay 64 bit)
-        run: GOARCH=386 go test -short ./...
+        run: GOARCH=386 go test ./...
       - name: build for a big endian platform
         run: GOOS=linux GOARCH=s390x go build ./...
       - name: build for wasm
         run: GOOS=js GOARCH=wasm go build ./...
       - name: build for wasi
         run: GOOS=wasip1 GOARCH=wasm go build ./...
+
+  cppcompat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: download the pinned C++ serialize.h
+        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.4.3/serialize.h
+      - name: build the C++ harness
+        run: c++ -O2 -std=c++17 -Wall -o compat/cpp/compat compat/cpp/compat.cpp
+      - name: cross language round trip
+        run: |
+          go run ./compat write /tmp/go.bin
+          ./compat/cpp/compat write /tmp/cpp.bin
+          cmp /tmp/go.bin /tmp/cpp.bin
+          go run ./compat read /tmp/cpp.bin
+          ./compat/cpp/compat read /tmp/go.bin
 
   coverage:
     runs-on: ubuntu-latest

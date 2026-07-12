@@ -42,12 +42,14 @@ func (s *MeasureStream) fail(err error) error {
 	return s.err
 }
 
-// measure adds bits to the measured count.
-func (s *MeasureStream) measure(bits int) error {
+// measure adds bits to the measured count. The count is int64 like the other streams,
+// so byte based measurements must multiply in the 64 bit domain: len(data)*8 overflows
+// int on 32 bit platforms for buffers of 256MB or more.
+func (s *MeasureStream) measure(bits int64) error {
 	if s.err != nil {
 		return s.err
 	}
-	s.bitsWritten += int64(bits)
+	s.bitsWritten += bits
 	return nil
 }
 
@@ -56,7 +58,7 @@ func (s *MeasureStream) SerializeBits(value *uint32, bits int) error {
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
 	}
-	return s.measure(bits)
+	return s.measure(int64(bits))
 }
 
 // SerializeBits64 measures bits, which must be in [1,64].
@@ -64,7 +66,7 @@ func (s *MeasureStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
 	}
-	return s.measure(bits)
+	return s.measure(int64(bits))
 }
 
 // SerializeInt measures the bits required for the range [min,max]. Like a write, the
@@ -79,7 +81,7 @@ func (s *MeasureStream) SerializeInt(value *int32, min, max int32) error {
 	if *value < min || *value > max {
 		return s.fail(ErrValueOutOfRange)
 	}
-	return s.measure(BitsRequired(uint32(min), uint32(max)))
+	return s.measure(int64(BitsRequired(uint32(min), uint32(max))))
 }
 
 // SerializeInt64 measures the bits required for the range [min,max]. Like a write, the
@@ -94,7 +96,7 @@ func (s *MeasureStream) SerializeInt64(value *int64, min, max int64) error {
 	if *value < min || *value > max {
 		return s.fail(ErrValueOutOfRange)
 	}
-	return s.measure(BitsRequired64(uint64(min), uint64(max)))
+	return s.measure(int64(BitsRequired64(uint64(min), uint64(max))))
 }
 
 // SerializeUint8 measures 8 bits.
@@ -121,7 +123,7 @@ func (s *MeasureStream) SerializeFloat64(value *float64) error { return s.measur
 // SerializeCompressedFloat32 measures the bits required for the quantized range.
 func (s *MeasureStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
 	_, bits, _ := compressedFloatParams(min, max, resolution)
-	return s.measure(bits)
+	return s.measure(int64(bits))
 }
 
 // SerializeBytes measures a worst case align plus the data bytes.
@@ -129,7 +131,7 @@ func (s *MeasureStream) SerializeBytes(data []byte) error {
 	if err := s.SerializeAlign(); err != nil {
 		return err
 	}
-	return s.measure(len(data) * 8)
+	return s.measure(int64(len(data)) * 8)
 }
 
 // SerializeString measures the length prefix, a worst case align, and the string bytes.
@@ -150,7 +152,7 @@ func (s *MeasureStream) SerializeString(value *string, bufferSize int) error {
 	if err := s.SerializeAlign(); err != nil {
 		return err
 	}
-	return s.measure(int(length) * 8)
+	return s.measure(int64(length) * 8)
 }
 
 // SerializeWideString measures the length prefix plus 32 bits per code point. Like a
@@ -168,12 +170,12 @@ func (s *MeasureStream) SerializeWideString(value *string, bufferSize int) error
 	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
 		return err
 	}
-	return s.measure(int(length) * 32)
+	return s.measure(int64(length) * 32)
 }
 
 // SerializeAlign measures the conservative worst case align of 7 bits.
 func (s *MeasureStream) SerializeAlign() error {
-	return s.measure(s.AlignBits())
+	return s.measure(int64(s.AlignBits()))
 }
 
 // SerializeObject measures an object that implements Serializer.
@@ -213,7 +215,7 @@ func (s *MeasureStream) SerializeIntRelative(previous int32, current *int32) err
 			bits += 32
 		}
 	}
-	return s.measure(bits)
+	return s.measure(int64(bits))
 }
 
 // AlignBits returns the worst case align of 7 bits. The number of bits required for

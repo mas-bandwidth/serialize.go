@@ -67,7 +67,7 @@ func (v *Vector) Serialize(stream serialize.Stream) error {
     stream.SerializeFloat32(&v.X)
     stream.SerializeFloat32(&v.Y)
     stream.SerializeFloat32(&v.Z)
-    return stream.Error()
+    return stream.Err()
 }
 
 type RigidBody struct {
@@ -89,7 +89,7 @@ func (b *RigidBody) Serialize(stream serialize.Stream) error {
         b.LinearVelocity = Vector{}
         b.AngularVelocity = Vector{}
     }
-    return stream.Error()
+    return stream.Err()
 }
 ```
 
