@@ -1,6 +1,6 @@
 # Introduction
 
-[![CI](https://github.com/mas-bandwidth/goserialize/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/goserialize/actions/workflows/ci.yml)
+[![CI](https://github.com/mas-bandwidth/goserialize/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/goserialize/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mas-bandwidth/goserialize.svg)](https://pkg.go.dev/github.com/mas-bandwidth/goserialize)
 
 **goserialize** is a simple bitpacking serializer for Go.
 
