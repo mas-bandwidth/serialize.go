@@ -1254,6 +1254,64 @@ func TestContinue(t *testing.T) {
 	}
 }
 
+func TestUntil(t *testing.T) {
+	// round trip a variable length sequence terminated by a done bit: a false bit
+	// before each element and a true bit at the end
+	buffer := make([]byte, 64)
+	items := []uint32{10, 20, 30, 40, 50}
+
+	writeStream := NewWriteStream(buffer)
+	{
+		i := 0
+		done := len(items) == 0
+		for Until(writeStream, &done) {
+			writeStream.SerializeBits(&items[i], 8)
+			i++
+			done = i == len(items)
+		}
+	}
+	if err := writeStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+
+	// one sentinel bit per element plus the terminating bit
+	expectedBits := int64(len(items))*9 + 1
+	if writeStream.BitsProcessed() != expectedBits {
+		t.Fatalf("expected %d bits, got %d", expectedBits, writeStream.BitsProcessed())
+	}
+
+	readStream := NewReadStream(writeStream.Data())
+	var read []uint32
+	done := false
+	for Until(readStream, &done) {
+		var item uint32
+		readStream.SerializeBits(&item, 8)
+		read = append(read, item)
+	}
+	if err := readStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != len(items) {
+		t.Fatalf("expected %d items, got %d", len(items), len(read))
+	}
+	for i := range items {
+		if read[i] != items[i] {
+			t.Fatalf("item %d: expected %d, got %d", i, items[i], read[i])
+		}
+	}
+
+	// an empty sequence is a single terminating bit
+	writeStream.Reset(buffer)
+	done = true
+	for Until(writeStream, &done) {
+		t.Fatal("loop body must not run for an empty sequence")
+	}
+	if writeStream.BitsProcessed() != 1 {
+		t.Fatalf("expected 1 bit for an empty sequence, got %d", writeStream.BitsProcessed())
+	}
+}
+
 func TestSentinelLoopTermination(t *testing.T) {
 	// a malicious packet of 0xFF bytes claims "another element follows" forever.
 	// because every successful serialize call consumes at least one bit, a Continue
@@ -1304,10 +1362,32 @@ func TestSentinelLoopTermination(t *testing.T) {
 		}
 	}
 
-	// the unguarded pattern documented as WRONG in the README really does spin: after
-	// the first failure the no-op reads never update hasNext. capped here to keep the
-	// demonstration finite. if a future change makes this loop terminate on its own,
-	// this test will fail and the documentation should be revisited.
+	// a malicious packet of zero bytes claims "not done" forever. an Until loop is
+	// bounded by the bit count of the packet and terminates with ErrOverflow.
+	{
+		malicious := make([]byte, 32)
+
+		stream := NewReadStream(malicious)
+		iterations := 0
+		done := false
+		for Until(stream, &done) {
+			var item uint32
+			stream.SerializeBits(&item, 8)
+			iterations++
+		}
+		if !errors.Is(stream.Err(), ErrOverflow) {
+			t.Fatalf("expected ErrOverflow, got %v", stream.Err())
+		}
+		if iterations > len(malicious)*8 {
+			t.Fatalf("loop ran %d iterations, more than the bit count of the packet", iterations)
+		}
+	}
+
+	// the unguarded patterns documented as WRONG in the README really do spin, in both
+	// polarities: after the first failure the no-op reads never update the sentinel.
+	// capped here to keep the demonstration finite. if a future change makes these
+	// loops terminate on their own, this test will fail and the documentation should
+	// be revisited.
 	{
 		stream := NewReadStream([]byte{})
 		hasNext := true
@@ -1317,7 +1397,19 @@ func TestSentinelLoopTermination(t *testing.T) {
 			spins++
 		}
 		if spins != 10000 {
-			t.Fatal("expected the unguarded sentinel loop to spin until the cap")
+			t.Fatal("expected the unguarded continuation bit loop to spin until the cap")
+		}
+	}
+	{
+		stream := NewReadStream([]byte{})
+		done := false
+		spins := 0
+		for !done && spins < 10000 {
+			stream.SerializeBool(&done) // no-op after the first failure
+			spins++
+		}
+		if spins != 10000 {
+			t.Fatal("expected the unguarded termination bit loop to spin until the cap")
 		}
 	}
 }
