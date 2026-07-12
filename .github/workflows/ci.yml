@@ -23,7 +23,7 @@ jobs:
       - run: go test ./...
       - run: go test -run=NONE -bench=. -benchtime=100x ./...
 
-  gofmt:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -31,7 +31,86 @@ jobs:
         with:
           go-version: stable
           cache: false
-      - run: test -z "$(gofmt -l .)"
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - name: modernize
+        run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: test on a 32 bit platform (int is 32 bits, bit counts must stay 64 bit)
+        run: GOARCH=386 go test -short ./...
+      - name: build for a big endian platform
+        run: GOOS=linux GOARCH=s390x go build ./...
+      - name: build for wasm
+        run: GOOS=js GOARCH=wasm go build ./...
+
+  benchmark:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: benchmark base
+        run: |
+          git checkout ${{ github.event.pull_request.base.sha }}
+          go test -run=NONE -bench=. -count=10 -benchtime=0.2s . | tee /tmp/base.txt
+      - name: benchmark head
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          go test -run=NONE -bench=. -count=10 -benchtime=0.2s . | tee /tmp/head.txt
+      - name: compare
+        run: |
+          echo '## Benchmark comparison (base vs PR)' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Shared runners are noisy: treat small deltas as informational.' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/head.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  apicompat:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: gorelease
+        run: |
+          BASE=$(git describe --tags --abbrev=0 origin/main)
+          echo "## API compatibility vs $BASE" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go run golang.org/x/exp/cmd/gorelease@latest -base="$BASE" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   fuzz:
     runs-on: ubuntu-latest
