@@ -80,10 +80,11 @@ summary) and apicompat (gorelease vs the latest tag in the job summary).
 Semver tags; the apicompat CI job (gorelease) suggests the next version. New exported
 API = minor bump. v1.0.0 is retracted in go.mod (immediate post-release renames).
 History: v1.0.1 naming review, v1.0.2 dead code audit, v1.1.0 Continue, v1.2.0 Until,
-v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split. Tags up
+v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split, v1.3.0
+rename to serialize.go. Tags up
 to v1.2.3 predate the rename and declare the goserialize module path, so they are
-not fetchable as serialize.go — the first post-rename tag is the first valid version
-of the new path (gorelease/apicompat cannot compare against pre-rename tags). After
+not fetchable as serialize.go — v1.3.0 is the first valid version of the new path
+(gorelease/apicompat cannot compare against the pre-rename tags). After
 tagging, prime the
 module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/serialize.go/@v/<tag>.info`.
 Update benchmark numbers (docs/performance.md and the README headline figures) only
