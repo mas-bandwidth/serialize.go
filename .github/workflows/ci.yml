@@ -52,7 +52,7 @@ jobs:
       - name: go mod tidy
         run: go mod tidy -diff
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           # pinned so releases with new checks break CI deliberately, not
           # randomly; bump by hand
@@ -195,7 +195,7 @@ jobs:
           go-version: stable
           cache: false
       - name: fuzz corpus cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/go-build/fuzz
           # run_id keys never hit exactly, so every run restores the newest
