@@ -128,13 +128,13 @@ func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
 		return
 	}
 
-	// the head bytes flushed the scratch exactly at the qword boundary
+	// the head bytes flushed the scratch exactly at the qword boundary, so the scratch
+	// is zero here and the aligned middle is a straight copy
 	numWords := (n - headBytes) / 8
 	if numWords > 0 {
 		copy(w.data[w.wordIndex*8:], data[headBytes:headBytes+numWords*8])
 		w.bitsWritten += numWords * 64
 		w.wordIndex += numWords
-		w.scratch = 0
 	}
 
 	for i := headBytes + numWords*8; i < n; i++ {
@@ -148,12 +148,6 @@ func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
 // buffer without bitpacking. The writer must be aligned to a byte boundary: call
 // WriteAlign first.
 func (w *BitWriter) WriteBytes(data []byte) {
-	writeBytes(w, data)
-}
-
-// WriteString writes the bytes of a string to the bit stream, exactly like WriteBytes
-// but without converting the string to a byte slice, so it does not allocate.
-func (w *BitWriter) WriteString(data string) {
 	writeBytes(w, data)
 }
 

@@ -73,6 +73,12 @@ func TestBitpacker(t *testing.T) {
 		if reader.BitsRemaining() != bytesWritten*8-bitsWritten {
 			t.Fatal("bad bits remaining")
 		}
+		if reader.WouldReadPastEnd(int(reader.BitsRemaining())) {
+			t.Fatal("reading the remaining bits must not read past the end")
+		}
+		if !reader.WouldReadPastEnd(int(reader.BitsRemaining()) + 1) {
+			t.Fatal("reading past the remaining bits must report past the end")
+		}
 	}
 }
 
