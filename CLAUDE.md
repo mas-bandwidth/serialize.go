@@ -60,11 +60,14 @@ published only under serialize.go.
 
 ## CI (.github/workflows/ci.yml)
 
-Push/PR: 3-OS test matrix (race + full + bench smoke), lint (golangci-lint +
-modernize + `go mod tidy -diff`), vuln (govulncheck), cross (linux/386 full tests —
-32 bit `int` coverage for the int64 bit counts — plus s390x and wasm build checks),
-fuzz (30s per target). PR-only: benchmark (benchstat base vs head in the job
-summary) and apicompat (gorelease vs the latest tag in the job summary).
+Push/PR, plus a weekly scheduled run: test matrix (3 OSes on stable Go plus an
+ubuntu leg on the go.mod minimum; race + shuffle + full + bench smoke), lint
+(golangci-lint — version pinned in ci.yml, bump deliberately — + modernize +
+`go mod tidy -diff`), vuln (govulncheck), cross (linux/386 full tests — 32 bit
+`int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 build
+checks), coverage (func table in the job summary), fuzz (30s per target on
+push/PR; the weekly run fuzzes 10m per target, and the corpus persists across
+runs via actions/cache). Dependabot bumps action versions weekly.
 
 ## Conventions
 
@@ -74,6 +77,9 @@ summary) and apicompat (gorelease vs the latest tag in the job summary).
 - Errors are the sentinels ErrOverflow, ErrValueOutOfRange, ErrAlign — no allocation.
 - On read failure values are left unmodified (matches C++; documented).
 - Comment style follows the C++ library's voice; doc comments explain contracts.
+- gofmt, not gofumpt: gofumpt was evaluated and rejected because it explodes the
+  compact table-test rows that mirror the C++ test suite.
+- Security reports: SECURITY.md (GitHub private vulnerability reporting is enabled).
 
 ## Releases
 

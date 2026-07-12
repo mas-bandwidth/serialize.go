@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # weekly: a real fuzzing session against the cached corpus, and early
+    # warning when a new Go release or @latest tool breaks something
+    - cron: "23 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -11,20 +22,27 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        go: [stable]
+        include:
+          # the go.mod minimum: catches accidental use of newer stdlib API
+          - os: ubuntu-latest
+            go: "1.23.x"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: stable
+          go-version: ${{ matrix.go }}
           cache: false
       - run: go vet ./...
-      - run: go test -short -race ./...
-      - run: go test ./...
+      - run: go test -short -race -shuffle=on ./...
+      - run: go test -shuffle=on ./...
       - run: go test -run=NONE -bench=. -benchtime=100x ./...
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -36,12 +54,15 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # pinned so releases with new checks break CI deliberately, not
+          # randomly; bump by hand
+          version: v2.12.2
       - name: modernize
         run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
 
   vuln:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -53,6 +74,7 @@ jobs:
 
   cross:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -65,10 +87,36 @@ jobs:
         run: GOOS=linux GOARCH=s390x go build ./...
       - name: build for wasm
         run: GOOS=js GOARCH=wasm go build ./...
+      - name: build for wasi
+        run: GOOS=wasip1 GOARCH=wasm go build ./...
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: test with coverage
+        run: go test -coverprofile=cover.out ./...
+      - name: coverage summary
+        run: |
+          total=$(go tool cover -func=cover.out | tail -1 | awk '{print $NF}')
+          {
+            echo "<details><summary>Coverage: ${total} of statements</summary>"
+            echo
+            echo '```'
+            go tool cover -func=cover.out
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   benchmark:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -96,6 +144,7 @@ jobs:
   apicompat:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -114,11 +163,23 @@ jobs:
 
   fuzz:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # 30s smoke on pushes and PRs; the weekly scheduled run fuzzes for real
+      FUZZTIME: ${{ github.event_name == 'schedule' && '10m' || '30s' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: stable
           cache: false
-      - run: go test -fuzz=FuzzReadStream -fuzztime=30s .
-      - run: go test -fuzz=FuzzRoundTrip -fuzztime=30s .
+      - name: fuzz corpus cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build/fuzz
+          # run_id keys never hit exactly, so every run restores the newest
+          # corpus via the prefix and saves its grown corpus under a new key
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - run: go test -fuzz=FuzzReadStream -fuzztime=$FUZZTIME .
+      - run: go test -fuzz=FuzzRoundTrip -fuzztime=$FUZZTIME .
