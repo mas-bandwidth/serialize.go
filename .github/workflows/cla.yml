@@ -44,7 +44,7 @@ jobs:
           path-to-signatures: signatures/caa.json
           path-to-document: https://github.com/mas-bandwidth/.github/blob/main/CAA.md
           # our own accounts and bots never need to sign
-          allowlist: gafferongames,*[bot]
+          allowlist: gafferongames,rowan-claude,*[bot]
           custom-notsigned-prcomment: 'Thanks for the contribution. Before it can be merged, please read the [Contributor Assignment Agreement](https://github.com/mas-bandwidth/.github/blob/main/CAA.md) and sign it by posting the exact sentence below as a comment on this PR.'
           custom-pr-sign-comment: 'I have read the CAA and I hereby sign it, assigning copyright in my contributions to Más Bandwidth LLC.'
           custom-allsigned-prcomment: 'All contributors have signed the CAA. Thank you.'
