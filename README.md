@@ -188,3 +188,5 @@ this credit in their product credits, or in their documentation:
 > serialize.go by Glenn Fiedler
 
 Free to use, source open, credit required. Fair credit keeps open source honest.
+
+<!-- CAA gate pilot test, safe to delete -->
