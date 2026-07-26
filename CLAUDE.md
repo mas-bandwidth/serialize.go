@@ -1,3 +1,44 @@
+<!-- HOT:BEGIN -->
+## HOT — read before reasoning about this repo
+
+WHAT: pure Go port of the C++ serialize library (mas-bandwidth/serialize, NORMATIVE).
+Module `github.com/mas-bandwidth/serialize.go`, package `serialize`. Not the C++ repo,
+not serialize.rs, not serialize.modern.
+
+NAME: the package is `serialize`, not `serializego` — deliberate, for short call sites
+and to match the C++ namespace, same pattern as nats.go. **Renamed from `goserialize`
+on 2026-07-12 and the old module path is FROZEN**: proxy-cached versions keep working,
+new versions publish only under serialize.go. Do not "restore" the old path.
+
+THE ONE THAT WILL BITE YOU: STICKY ERRORS AND LOOP CONTROL
+The first error LATCHES on the stream; every later serialize call is a no-op that leaves
+its value unmodified. So any serialized value that controls a loop — a count, a sentinel
+bit — **must have its error checked before use**, or a truncated packet spins the loop
+forever. That is a DoS, reachable from the wire, and it looks like ordinary code.
+`Continue` (continuation-bit polarity) and `Until` (termination-bit polarity) are the
+safe primitives. Both polarities exist because the polarity is part of the wire format —
+neither is redundant. See docs/reading_untrusted_data.md.
+
+INVARIANTS
+- **The wire format is frozen and bit-identical to the C++ library.**
+  `TestGoldenWireFormat` pins 72 bytes copied verbatim from the C++ test suite, and the
+  cppcompat CI job round-trips the `compat/` harness against the real C++ library
+  (pinned serialize.h) on every push and PR — both directions must decode each other.
+  Never change an encoding without coordinating with C++. New features get ported from
+  serialize.h, with its tests mirrored and BOTH halves of the compat harness extended.
+- **Malicious packet data never panics.** Reads are bounds-checked and range-validated
+  and return errors. Panics are reserved for API misuse only (bits outside [1,32]/[1,64],
+  min >= max, write buffer not a multiple of 8). The fuzz targets enforce this.
+- **Zero allocations on every serialization path**, asserted with ReportAllocs.
+- **Write buffers must be a multiple of 8 bytes** (the writer stores qwords). The reader
+  accepts any length and detects backing-array slack via `cap()` for branchless 64-bit
+  window loads; slack bytes are loaded but never interpreted.
+
+DECISIONS THAT READ AS BUGS
+- errcheck is deliberately excluded from `_test.go` in `.golangci.yml`.
+- The golangci-lint version is pinned in ci.yml; bump it deliberately, not incidentally.
+<!-- HOT:END -->
+
 # serialize.go
 
 Pure Go port of the C++ serialize library (github.com/mas-bandwidth/serialize).
