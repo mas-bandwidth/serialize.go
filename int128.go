@@ -43,7 +43,7 @@ func (x Uint128) Uint64() uint64 {
 
 // Int128 reinterprets the bit pattern as a signed 128 bit integer.
 func (x Uint128) Int128() Int128 {
-	return Int128{Lo: x.Lo, Hi: x.Hi}
+	return Int128(x)
 }
 
 // IsZero reports whether x is zero.
@@ -231,7 +231,7 @@ func (x Int128) Int64() int64 {
 
 // Uint128 reinterprets the bit pattern as an unsigned 128 bit integer.
 func (x Int128) Uint128() Uint128 {
-	return Uint128{Lo: x.Lo, Hi: x.Hi}
+	return Uint128(x)
 }
 
 // IsNegative reports whether x is negative.

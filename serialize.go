@@ -20,6 +20,11 @@
 //   - Serialize signed integer values in [min,max] writing only the required bits to the buffer
 //   - Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative
 //     to another integer
+//   - Serialize fixed point values with a Q format and [min,max] bounds in whole units, writing
+//     only the required bits, with exact round trips — including wide formats like Q112.16 via
+//     the 128 bit pair
+//   - Serialize 128 bit integers: Uint128 raw at a full 128 bits, Int128 ranged in only the
+//     bits its range needs
 //   - Alignment support so you can align your bitstream to a byte boundary whenever you want
 //   - Unified serialization through the Stream interface, so you can write one function that
 //     handles read, write and measure

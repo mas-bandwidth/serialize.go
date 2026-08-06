@@ -21,7 +21,7 @@ neither is redundant. See docs/reading_untrusted_data.md.
 
 INVARIANTS
 - **The wire format is frozen and bit-identical to the C++ library.**
-  `TestGoldenWireFormat` pins 72 bytes copied verbatim from the C++ test suite, and the
+  `TestGoldenWireFormat` pins 112 bytes copied verbatim from the C++ test suite, and the
   cppcompat CI job round-trips the `compat/` harness against the real C++ library
   (pinned serialize.h) on every push and PR — both directions must decode each other.
   Never change an encoding without coordinating with C++. New features get ported from
@@ -51,7 +51,7 @@ published only under serialize.go.
 ## Invariants — never break these
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
-   `TestGoldenWireFormat` pins 72 golden bytes copied verbatim from the C++ test
+   `TestGoldenWireFormat` pins 112 golden bytes copied verbatim from the C++ test
    suite, `bench/cpp/bench.cpp` asserts the benchmark packet is byte identical, and
    the cppcompat CI job round trips the `compat/` harness against the real C++
    library (pinned serialize.h) on every push and PR: the Go and C++ streams must
@@ -78,14 +78,18 @@ published only under serialize.go.
 
 ## Layout
 
-- `serialize.go` — package doc, sentinel errors, panic messages, BitsRequired(64), zigzag
+- `serialize.go` — package doc, sentinel errors, panic messages, BitsRequired(64/128), zigzag
+- `int128.go` — the Uint128/Int128 two-lane pair (semantics mirror the C++ emulated
+  128 bit types: two's complement wrap, documented shift/division edges)
 - `bitpacker.go` — BitWriter (64 bit scratch, LE qword stores), BitReader (branchless
   64 bit windows at byte granularity), generic `writeBytes[~[]byte|~string]`
 - `stream.go` — Stream interface, Serializer, Continue/Until, compressed float params,
-  int-relative buckets
+  fixed point params, int-relative buckets
 - `write_stream.go` / `read_stream.go` / `measure_stream.go` — the three concrete
   streams; methods are implemented per stream (no shared dispatch) for speed
 - `serialize_test.go` — ported C++ test suite + golden wire test + DoS termination tests
+- `int128_test.go` — 128 bit pair known-answer tests + differentials against math/big
+- `fixed_test.go` — fixed point + 128 bit stream tests, golden pins derived from STANDARD.md
 - `fuzz_test.go`, `bench_test.go`, `example_test.go` (examples ported from example.cpp)
 - `bench/cpp/bench.cpp` — C++ comparison benchmark (results + analysis in docs/performance.md)
 - `compat/` — cross language wire compat harness (`main.go` + `cpp/compat.cpp`, kept

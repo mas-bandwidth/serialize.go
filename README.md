@@ -12,6 +12,8 @@ It has the following features:
 * Serialize any integer value from [1,64] bits writing only that number of bits to the buffer
 * Serialize signed integer values with [min,max] writing only the required bits to the buffer
 * Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer
+* Serialize fixed point values with a Q format and [min,max] bounds in whole units, writing only the required bits — round trips are exact, unlike compressed floats. Wide formats like Q112.16 work via the 128 bit pair
+* Serialize 128 bit integers: `Uint128` raw at a full 128 bits, `Int128` ranged in only the bits its range needs — and where that range fits 64 bits the bytes are identical to `SerializeInt64`
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
 * Zero allocations on every serialization path
