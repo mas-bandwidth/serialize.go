@@ -212,9 +212,11 @@ func (w *BitWriter) Data() []byte {
 // Any buffer size is supported. For the fastest reads, keep at least 7 bytes of slack in
 // the backing array beyond the data — for example, read packets into a large buffer and
 // slice the packet out of it. The reader detects the slack via cap() and uses the fully
-// branchless window load everywhere; without slack, reads near the end of the buffer
-// assemble the window from the remaining bytes instead. Slack bytes are loaded but never
-// interpreted: bits past the end of the data cannot reach the output of a read.
+// branchless window load everywhere; without slack, Reset copies the final bytes of the
+// data into a small zero padded tail window, and reads near the end of the buffer load
+// from that instead. Either way the load is a single 64 bit window: slack (or padding)
+// bytes are loaded but never interpreted, because bits past the end of the data cannot
+// reach the output of a read.
 //
 // The zero value is an exhausted reader: create one with NewBitReader, or Reset one onto
 // a buffer before use.
@@ -223,6 +225,8 @@ type BitReader struct {
 	padded   []byte
 	numBits  int64
 	bitsRead int64
+	tailBase int      // byte index the tail window is based at
+	tail     [16]byte // zero padded copy of the final data bytes (no-slack buffers only)
 }
 
 // NewBitReader creates a bit reader that reads the bitpacked data in the given slice.
@@ -235,30 +239,60 @@ func NewBitReader(data []byte) *BitReader {
 }
 
 // Reset points the bit reader at a data slice and clears all read state, allowing a
-// single reader to be reused without allocation.
+// single reader to be reused without allocation. When the backing array has no slack
+// past the data, the final bytes are copied into the zero padded tail window so that
+// every read is a single 64 bit window load: see fillTail.
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
 	r.padded = data[:cap(data)]
 	r.numBits = int64(len(data)) * 8
 	r.bitsRead = 0
+	if cap(data)-len(data) < 7 {
+		r.fillTail()
+	}
+}
+
+// fillTail copies the final bytes of the data into the tail window, zero padded, for
+// buffers whose backing array has less than 7 bytes of slack past the data. Reads near
+// the end of such a buffer load their 64 bit window from the tail instead of the data.
+// The padding bytes are never interpreted — bits past the end of the data cannot reach
+// the output of a read — so zeros here produce exactly the same outputs as slack bytes.
+func (r *BitReader) fillTail() {
+	r.tailBase = len(r.data) - 8
+	if r.tailBase < 0 {
+		r.tailBase = 0
+	}
+	n := copy(r.tail[:], r.data[r.tailBase:])
+	clear(r.tail[n:])
+}
+
+// tryReadBits bounds checks and reads bits that have already been validated to [1,32],
+// reporting false if the read would go past the end of the buffer. It exists so stream
+// wrappers can fuse the bounds check and the window load into their own bodies: both
+// this and readBits stay within the compiler's inlining budget.
+func (r *BitReader) tryReadBits(bits int) (uint32, bool) {
+	if r.bitsRead+int64(bits) > r.numBits {
+		return 0, false
+	}
+	return r.readBits(bits), true
 }
 
 // readBits is the unchecked hot path shared by ReadBits and the read stream, which
 // perform their own validation before calling it. bits must be in [1,32] and must not
 // read past the end of the buffer.
+//
+// The body is kept small enough for the compiler to inline into the per-field read
+// path: one branch selecting the window source, one 64 bit window load, shift, mask.
 func (r *BitReader) readBits(bits int) uint32 {
 	byteIndex := int(r.bitsRead >> 3)
 
-	var window uint64
-	if byteIndex+8 <= len(r.padded) {
-		window = binary.LittleEndian.Uint64(r.padded[byteIndex:])
-	} else {
-		// near the end of a buffer whose backing array has no slack past the data:
-		// assemble the window from the remaining bytes
-		for i := len(r.padded) - byteIndex - 1; i >= 0; i-- {
-			window = window<<8 | uint64(r.padded[byteIndex+i])
-		}
+	src := r.padded
+	if byteIndex+8 > len(src) {
+		// no slack past the data: the final bytes live in the zero padded tail window
+		src = r.tail[:]
+		byteIndex -= r.tailBase
 	}
+	window := binary.LittleEndian.Uint64(src[byteIndex:])
 
 	output := uint32(window>>(r.bitsRead&7)) & uint32(uint64(1)<<bits-1)
 
