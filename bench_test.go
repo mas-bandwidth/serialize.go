@@ -401,3 +401,62 @@ func BenchmarkReadStreamFixed128(b *testing.B) {
 		}
 	}
 }
+
+// benchWriteString writes a single serialized string and returns the wire bytes.
+func benchWriteString(b *testing.B, v string) []byte {
+	b.Helper()
+	buffer := make([]byte, 64)
+	stream := NewWriteStream(buffer)
+	if err := stream.SerializeString(&v, 64); err != nil {
+		b.Fatal(err)
+	}
+	stream.Flush()
+	return stream.Data()
+}
+
+// BenchmarkReadStreamStringStable reads the same chat sized string into a reused value
+// every iteration — the steady state of re-reading stable strings (names, channels,
+// repeated messages). This path is allocation free.
+func BenchmarkReadStreamStringStable(b *testing.B) {
+	const message = "did you see that ludicrous display"
+	data := benchWriteString(b, message)
+
+	stream := NewReadStream(data)
+	var value string
+
+	b.SetBytes(int64(len(message)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(data)
+		if err := stream.SerializeString(&value, 64); err != nil {
+			b.Fatal(err)
+		}
+	}
+	benchSink += uint32(len(value))
+}
+
+// BenchmarkReadStreamStringChanging alternates between two different chat sized strings
+// into a reused value — every read replaces the content, so every read pays the one
+// string allocation plus the failed comparison.
+func BenchmarkReadStreamStringChanging(b *testing.B) {
+	const messageA = "did you see that ludicrous display"
+	const messageB = "what was Wenger thinking sending on"
+	wire := [2][]byte{benchWriteString(b, messageA), benchWriteString(b, messageB)}
+
+	stream := NewReadStream(wire[0])
+	var value string
+
+	b.SetBytes(int64(len(messageA)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(wire[n&1])
+		if err := stream.SerializeString(&value, 64); err != nil {
+			b.Fatal(err)
+		}
+	}
+	benchSink += uint32(len(value))
+}
