@@ -141,6 +141,119 @@ func (s *WriteStream) SerializeInt64(value *int64, min, max int64) error {
 	return nil
 }
 
+// writeGroups128 writes a 128 bit offset in 32 bit groups, least significant group
+// first, with the final group carrying the remainder: the same splitting convention
+// as SerializeBits64 and SerializeInt64. numBits must be in [1,128] and already
+// bounds checked against the buffer.
+func (s *WriteStream) writeGroups128(offset Uint128, numBits int) {
+	switch {
+	case numBits <= 32:
+		s.writer.writeBits(uint32(offset.Lo), numBits)
+	case numBits <= 64:
+		s.writer.writeBits(uint32(offset.Lo), 32)
+		s.writer.writeBits(uint32(offset.Lo>>32), numBits-32)
+	case numBits <= 96:
+		s.writer.writeBits(uint32(offset.Lo), 32)
+		s.writer.writeBits(uint32(offset.Lo>>32), 32)
+		s.writer.writeBits(uint32(offset.Hi), numBits-64)
+	default:
+		s.writer.writeBits(uint32(offset.Lo), 32)
+		s.writer.writeBits(uint32(offset.Lo>>32), 32)
+		s.writer.writeBits(uint32(offset.Hi), 32)
+		s.writer.writeBits(uint32(offset.Hi>>32), numBits-96)
+	}
+}
+
+// SerializeInt128 writes *value, which must be in [min,max], using only the bits
+// required to represent the range. Returns ErrValueOutOfRange if it is not. The
+// offset from min is computed in the unsigned domain, so ranges wider than 2^127
+// are exact. Where the range fits 64 bits or fewer the bytes are identical to
+// SerializeInt64 over the same bounds.
+func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
+	if min.Cmp(max) >= 0 {
+		panic(panicMinMax)
+	}
+	if s.err != nil {
+		return s.err
+	}
+	v := *value
+	if v.Cmp(min) < 0 || v.Cmp(max) > 0 {
+		return s.fail(ErrValueOutOfRange)
+	}
+	numBits := BitsRequired128(min.Uint128(), max.Uint128())
+	if s.writer.bitsWritten+int64(numBits) > s.writer.numBits {
+		return s.fail(ErrOverflow)
+	}
+	s.writeGroups128(v.Uint128().Sub(min.Uint128()), numBits)
+	return nil
+}
+
+// SerializeUint128 writes an unsigned 128 bit integer: the low 64 bit half first,
+// then the high half, each half as the low dword then the high dword. When the
+// stream is byte aligned the result is the 16 bytes of the value in little endian
+// order.
+func (s *WriteStream) SerializeUint128(value *Uint128) error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.writer.bitsWritten+128 > s.writer.numBits {
+		return s.fail(ErrOverflow)
+	}
+	s.writer.writeBits(uint32(value.Lo), 32)
+	s.writer.writeBits(uint32(value.Lo>>32), 32)
+	s.writer.writeBits(uint32(value.Hi), 32)
+	s.writer.writeBits(uint32(value.Hi>>32), 32)
+	return nil
+}
+
+// SerializeFixed64 writes a raw fixed point value in *value, which must be within
+// [min,max] whole units, as an offset from the raw (scaled) minimum in the bits
+// required for the raw range. Returns ErrValueOutOfRange if it is not. The wire
+// format is byte identical to SerializeInt64 of the raw value over the raw bounds.
+func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
+	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
+	if s.err != nil {
+		return s.err
+	}
+	// subtract in the unsigned domain: the raw range may be wider than 2^63
+	offset := uint64(*value) - rawMin
+	if offset > rawRange {
+		return s.fail(ErrValueOutOfRange)
+	}
+	if s.writer.bitsWritten+int64(numBits) > s.writer.numBits {
+		return s.fail(ErrOverflow)
+	}
+	if numBits <= 32 {
+		s.writer.writeBits(uint32(offset), numBits)
+		return nil
+	}
+	// low dword first, then the high remainder: same convention as SerializeInt64
+	s.writer.writeBits(uint32(offset), 32)
+	s.writer.writeBits(uint32(offset>>32), numBits-32)
+	return nil
+}
+
+// SerializeFixed128 writes a raw wide fixed point value in *value, which must be
+// within [min,max] whole units, as an offset from the raw (scaled) minimum in the
+// bits required for the raw range. Returns ErrValueOutOfRange if it is not.
+// integerBits plus fractionBits must equal 128.
+func (s *WriteStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
+	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
+	if s.err != nil {
+		return s.err
+	}
+	// subtract in the unsigned domain: the raw range may be wider than 2^127
+	offset := value.Uint128().Sub(rawMin)
+	if offset.Cmp(rawRange) > 0 {
+		return s.fail(ErrValueOutOfRange)
+	}
+	if s.writer.bitsWritten+int64(numBits) > s.writer.numBits {
+		return s.fail(ErrOverflow)
+	}
+	s.writeGroups128(offset, numBits)
+	return nil
+}
+
 // SerializeUint8 writes an unsigned 8 bit integer.
 func (s *WriteStream) SerializeUint8(value *uint8) error {
 	return s.writeBits(uint32(*value), 8)

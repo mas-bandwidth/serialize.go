@@ -62,6 +62,8 @@ const (
 	panicBitsRange     = "serialize: bits must be in [1,32]"
 	panicBitsRange64   = "serialize: bits must be in [1,64]"
 	panicMinMax        = "serialize: min must be less than max"
+	panicFixedParams   = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min < max"
+	panicFixedBounds   = "serialize: fixed point bounds in whole units do not fit the Q format"
 	panicBufferSize    = "serialize: string buffer size must be in [2,1<<31)"
 	panicFloatParams   = "serialize: compressed float requires min < max and resolution > 0"
 	panicWriteOverflow = "serialize: bit writer overflow"
@@ -86,6 +88,18 @@ func BitsRequired64(min, max uint64) int {
 	}
 	// subtract in the unsigned domain: the range may be wider than 2^63
 	return bits.Len64(max - min)
+}
+
+// BitsRequired128 returns the number of bits required to serialize a 128 bit integer
+// in range [min,max]. The result is in [0,128]. The subtraction is performed in the
+// unsigned domain, so ranges wider than 2^127 are exact rather than overflowing:
+// signed bounds must be converted with Int128.Uint128, which preserves the sign
+// extended bit pattern.
+func BitsRequired128(min, max Uint128) int {
+	if min == max {
+		return 0
+	}
+	return max.Sub(min).Len()
 }
 
 // SignedToUnsigned converts a signed integer to an unsigned integer with zig-zag encoding.
