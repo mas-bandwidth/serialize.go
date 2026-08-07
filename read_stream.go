@@ -261,9 +261,12 @@ func (s *ReadStream) SerializeFixed128(value *Int128, integerBits, fractionBits 
 
 // SerializeUint8 reads an unsigned 8 bit integer.
 func (s *ReadStream) SerializeUint8(value *uint8) error {
-	var v uint32
-	if err := s.readBits(&v, 8); err != nil {
-		return err
+	if s.err != nil {
+		return s.err
+	}
+	v, ok := s.reader.tryReadBits(8)
+	if !ok {
+		return s.fail(ErrOverflow)
 	}
 	*value = uint8(v)
 	return nil
@@ -271,9 +274,12 @@ func (s *ReadStream) SerializeUint8(value *uint8) error {
 
 // SerializeUint16 reads an unsigned 16 bit integer.
 func (s *ReadStream) SerializeUint16(value *uint16) error {
-	var v uint32
-	if err := s.readBits(&v, 16); err != nil {
-		return err
+	if s.err != nil {
+		return s.err
+	}
+	v, ok := s.reader.tryReadBits(16)
+	if !ok {
+		return s.fail(ErrOverflow)
 	}
 	*value = uint16(v)
 	return nil
@@ -300,9 +306,12 @@ func (s *ReadStream) SerializeUint64(value *uint64) error {
 
 // SerializeBool reads a boolean value from one bit.
 func (s *ReadStream) SerializeBool(value *bool) error {
-	var v uint32
-	if err := s.readBits(&v, 1); err != nil {
-		return err
+	if s.err != nil {
+		return s.err
+	}
+	v, ok := s.reader.tryReadBits(1)
+	if !ok {
+		return s.fail(ErrOverflow)
 	}
 	*value = v != 0
 	return nil
@@ -310,9 +319,12 @@ func (s *ReadStream) SerializeBool(value *bool) error {
 
 // SerializeFloat32 reads an uncompressed 32 bit floating point value.
 func (s *ReadStream) SerializeFloat32(value *float32) error {
-	var v uint32
-	if err := s.readBits(&v, 32); err != nil {
-		return err
+	if s.err != nil {
+		return s.err
+	}
+	v, ok := s.reader.tryReadBits(32)
+	if !ok {
+		return s.fail(ErrOverflow)
 	}
 	*value = math.Float32frombits(v)
 	return nil
@@ -320,11 +332,15 @@ func (s *ReadStream) SerializeFloat32(value *float32) error {
 
 // SerializeFloat64 reads an uncompressed 64 bit floating point value.
 func (s *ReadStream) SerializeFloat64(value *float64) error {
-	var v uint64
-	if err := s.SerializeUint64(&v); err != nil {
-		return err
+	if s.err != nil {
+		return s.err
 	}
-	*value = math.Float64frombits(v)
+	if s.reader.bitsRead+64 > s.reader.numBits {
+		return s.fail(ErrOverflow)
+	}
+	lo := s.reader.readBits(32)
+	hi := s.reader.readBits(32)
+	*value = math.Float64frombits(uint64(hi)<<32 | uint64(lo))
 	return nil
 }
 

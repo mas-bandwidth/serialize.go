@@ -164,7 +164,7 @@ The C++ serialize library is 2-6× faster on the same benchmarks, mostly because
 # Limitations
 
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment.
-* Read buffers may be any number of bytes. For the fastest reads, keep at least 7 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and uses fully branchless window loads; without slack, reads near the end of the buffer assemble the window from the remaining bytes instead. Slack bytes are loaded but never interpreted.
+* Read buffers may be any number of bytes. For the fastest reads, keep at least 7 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and uses fully branchless window loads; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted.
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
 * `SerializeWideString` stores 32 bits per code point and is wire compatible with `serialize_wstring` in the C++ library. Code points that are not valid (surrogates or values above 0x10FFFF) fail on read.
 
