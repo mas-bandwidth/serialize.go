@@ -258,10 +258,7 @@ func (r *BitReader) Reset(data []byte) {
 // The padding bytes are never interpreted — bits past the end of the data cannot reach
 // the output of a read — so zeros here produce exactly the same outputs as slack bytes.
 func (r *BitReader) fillTail() {
-	r.tailBase = len(r.data) - 8
-	if r.tailBase < 0 {
-		r.tailBase = 0
-	}
+	r.tailBase = max(len(r.data)-8, 0)
 	n := copy(r.tail[:], r.data[r.tailBase:])
 	clear(r.tail[n:])
 }
