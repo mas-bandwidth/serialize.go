@@ -20,6 +20,11 @@
 //   - Serialize signed integer values in [min,max] writing only the required bits to the buffer
 //   - Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative
 //     to another integer
+//   - Serialize fixed point values with a Q format and [min,max] bounds in whole units, writing
+//     only the required bits, with exact round trips — including wide formats like Q112.16 via
+//     the 128 bit pair
+//   - Serialize 128 bit integers: Uint128 raw at a full 128 bits, Int128 ranged in only the
+//     bits its range needs
 //   - Alignment support so you can align your bitstream to a byte boundary whenever you want
 //   - Unified serialization through the Stream interface, so you can write one function that
 //     handles read, write and measure
@@ -62,6 +67,8 @@ const (
 	panicBitsRange     = "serialize: bits must be in [1,32]"
 	panicBitsRange64   = "serialize: bits must be in [1,64]"
 	panicMinMax        = "serialize: min must be less than max"
+	panicFixedParams   = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min < max"
+	panicFixedBounds   = "serialize: fixed point bounds in whole units do not fit the Q format"
 	panicBufferSize    = "serialize: string buffer size must be in [2,1<<31)"
 	panicFloatParams   = "serialize: compressed float requires min < max and resolution > 0"
 	panicWriteOverflow = "serialize: bit writer overflow"
@@ -86,6 +93,18 @@ func BitsRequired64(min, max uint64) int {
 	}
 	// subtract in the unsigned domain: the range may be wider than 2^63
 	return bits.Len64(max - min)
+}
+
+// BitsRequired128 returns the number of bits required to serialize a 128 bit integer
+// in range [min,max]. The result is in [0,128]. The subtraction is performed in the
+// unsigned domain, so ranges wider than 2^127 are exact rather than overflowing:
+// signed bounds must be converted with Int128.Uint128, which preserves the sign
+// extended bit pattern.
+func BitsRequired128(min, max Uint128) int {
+	if min == max {
+		return 0
+	}
+	return max.Sub(min).Len()
 }
 
 // SignedToUnsigned converts a signed integer to an unsigned integer with zig-zag encoding.

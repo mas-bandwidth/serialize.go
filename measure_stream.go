@@ -99,6 +99,52 @@ func (s *MeasureStream) SerializeInt64(value *int64, min, max int64) error {
 	return s.measure(int64(BitsRequired64(uint64(min), uint64(max))))
 }
 
+// SerializeInt128 measures the bits required for the range [min,max]. Like a write,
+// the value must be in range or ErrValueOutOfRange is returned.
+func (s *MeasureStream) SerializeInt128(value *Int128, min, max Int128) error {
+	if min.Cmp(max) >= 0 {
+		panic(panicMinMax)
+	}
+	if s.err != nil {
+		return s.err
+	}
+	if value.Cmp(min) < 0 || value.Cmp(max) > 0 {
+		return s.fail(ErrValueOutOfRange)
+	}
+	return s.measure(int64(BitsRequired128(min.Uint128(), max.Uint128())))
+}
+
+// SerializeUint128 measures 128 bits.
+func (s *MeasureStream) SerializeUint128(value *Uint128) error { return s.measure(128) }
+
+// SerializeFixed64 measures the bits required for the raw (scaled) range. Like a
+// write, the raw value must be within [min,max] whole units or ErrValueOutOfRange is
+// returned.
+func (s *MeasureStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
+	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
+	if s.err != nil {
+		return s.err
+	}
+	if uint64(*value)-rawMin > rawRange {
+		return s.fail(ErrValueOutOfRange)
+	}
+	return s.measure(int64(numBits))
+}
+
+// SerializeFixed128 measures the bits required for the raw (scaled) range. Like a
+// write, the raw value must be within [min,max] whole units or ErrValueOutOfRange is
+// returned. integerBits plus fractionBits must equal 128.
+func (s *MeasureStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
+	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
+	if s.err != nil {
+		return s.err
+	}
+	if value.Uint128().Sub(rawMin).Cmp(rawRange) > 0 {
+		return s.fail(ErrValueOutOfRange)
+	}
+	return s.measure(int64(numBits))
+}
+
 // SerializeUint8 measures 8 bits.
 func (s *MeasureStream) SerializeUint8(value *uint8) error { return s.measure(8) }
 

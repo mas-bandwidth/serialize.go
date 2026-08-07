@@ -331,3 +331,73 @@ func BenchmarkReadBytes(b *testing.B) {
 		reader.ReadBytes(output)
 	}
 }
+
+// benchFixed128Data carries one of each new operation's value: a Q48.16 fixed point
+// value, a wide Q112.16 fixed point value, a raw uint128 and a ranged int128. Every
+// new serialization path must stay zero allocation, like the rest — the values live
+// in a struct so the pointers passed through the Stream interface do not force the
+// locals to escape on every call.
+type benchFixed128Data struct {
+	fixed64   int64
+	wide      Int128
+	value128  Uint128
+	ranged128 Int128
+}
+
+func (d *benchFixed128Data) init() {
+	d.fixed64 = 12345*65536 + 32768
+	d.wide = Int128From64(-(98765432109*65536 + 4321))
+	d.value128 = Uint128{Lo: 0xFEDCBA9876543210, Hi: 0x0123456789ABCDEF}
+	d.ranged128 = Int128From64(-42)
+}
+
+func (d *benchFixed128Data) Serialize(stream Stream) error {
+	stream.SerializeFixed64(&d.fixed64, 48, 16, -100000000000, +100000000000)
+	stream.SerializeFixed128(&d.wide, 112, 16, -1152921504606846976, +1152921504606846976)
+	stream.SerializeUint128(&d.value128)
+	stream.SerializeInt128(&d.ranged128, Int128From64(1).Lsh(100).Neg(), Int128From64(1).Lsh(100))
+	return stream.Err()
+}
+
+func BenchmarkWriteStreamFixed128(b *testing.B) {
+	buffer := make([]byte, 64)
+	stream := NewWriteStream(buffer)
+	data := &benchFixed128Data{}
+	data.init()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := data.Serialize(stream); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+func BenchmarkReadStreamFixed128(b *testing.B) {
+	buffer := make([]byte, 64)
+	writeStream := NewWriteStream(buffer)
+	written := &benchFixed128Data{}
+	written.init()
+	if err := written.Serialize(writeStream); err != nil {
+		b.Fatal(err)
+	}
+	writeStream.Flush()
+	packet := writeStream.Data()
+
+	stream := NewReadStream(packet)
+	data := &benchFixed128Data{}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(packet)
+		if err := data.Serialize(stream); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

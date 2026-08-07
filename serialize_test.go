@@ -827,6 +827,12 @@ type goldenWireData struct {
 	bytes                [7]byte
 	str                  string
 	wstr                 string
+	fixedQ8_8            int64
+	fixedQ16_16          int64
+	fixedQ48_16          int64
+	fixedQ16_16Unsigned  int64
+	fixedQ112_16Wide     Int128
+	fixedQ64_64Wide      Int128
 }
 
 func goldenWireInit() goldenWireData {
@@ -849,7 +855,14 @@ func goldenWireInit() goldenWireData {
 		relativeFar:          2100, // difference of 2000 from the base: exercises the twelve bit bucket
 		bytes:                [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
 		str:                  "golden",
-		wstr:                 "мир", // cyrillic, BMP only
+		wstr:                 "мир",                                     // cyrillic, BMP only
+		fixedQ8_8:            -(3*256 + 64),                             // -3.25 in Q8.8
+		fixedQ16_16:          1234*65536 + 32768,                        // 1234.5 in Q16.16
+		fixedQ48_16:          -(54321*65536 + 12345),                    // -54321.1883... in Q48.16
+		fixedQ16_16Unsigned:  29999*65536 + 65535,                       // 29999.99998... in Q16.16: every fraction bit set
+		fixedQ112_16Wide:     Int128From64(-(98765432109*65536 + 4321)), // -98765432109.066 in Q112.16: 75 bits on the wire, three groups
+		fixedQ64_64Wide: Int128From64(0x0123456789ABCDEF).Lsh(64).
+			Add(Int128From64(0x0FEDCBA987654321)), // Q64.64 over the full unit range: 128 bits, four groups, every group distinct
 	}
 }
 
@@ -875,10 +888,22 @@ func goldenWireSerialize(stream Stream, data *goldenWireData) error {
 	stream.SerializeBytes(data.bytes[:])
 	stream.SerializeString(&data.str, 16)
 	stream.SerializeWideString(&data.wstr, 8)
+	stream.SerializeAlign() // the fixed point section starts byte aligned, so every byte pinned above it stays put
+	stream.SerializeFixed64(&data.fixedQ8_8, 8, 8, -100, +100)
+	stream.SerializeFixed64(&data.fixedQ16_16, 16, 16, -2000, +2000)
+	stream.SerializeFixed64(&data.fixedQ48_16, 48, 16, -100000, +100000)
+	stream.SerializeFixed64(&data.fixedQ16_16Unsigned, 16, 16, 0, 30000)
+	stream.SerializeAlign()                                                                             // the wide fixed section starts byte aligned, so every byte pinned above it stays put
+	stream.SerializeFixed128(&data.fixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872) // ±2^57 units: 75 bits, the three group structure
+	stream.SerializeFixed128(&data.fixedQ64_64Wide, 64, 64, math.MinInt64, math.MaxInt64)               // full unit range: 128 bits, the four group structure
 	return stream.Err()
 }
 
 // goldenWireBytes are copied verbatim from the C++ serialize library test suite.
+// The fixed point tail (the 40 bytes from offset 72) was additionally re-derived
+// from STANDARD.md's stated rules alone — offset encoding over the raw (scaled)
+// bounds, 32 bit groups from least significant upward — and the derivation agrees
+// with the C++ bytes exactly, so this pin is Go, C++ and the document agreeing.
 var goldenWireBytes = []byte{
 	0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
 	0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
@@ -886,6 +911,10 @@ var goldenWireBytes = []byte{
 	0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
 	0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
 	0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
+	0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
+	0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
+	0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
+	0x2B, 0x1A, 0x09, 0x04,
 }
 
 func TestGoldenWireFormat(t *testing.T) {

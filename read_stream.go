@@ -143,6 +143,122 @@ func (s *ReadStream) SerializeInt64(value *int64, min, max int64) error {
 	return nil
 }
 
+// readGroups128 reads a 128 bit offset written in 32 bit groups, least significant
+// group first, with the final group carrying the remainder: the same splitting
+// convention as SerializeBits64 and SerializeInt64. numBits must be in [1,128] and
+// already bounds checked against the buffer.
+func (s *ReadStream) readGroups128(numBits int) Uint128 {
+	var offset Uint128
+	switch {
+	case numBits <= 32:
+		offset.Lo = uint64(s.reader.readBits(numBits))
+	case numBits <= 64:
+		offset.Lo = uint64(s.reader.readBits(32))
+		offset.Lo |= uint64(s.reader.readBits(numBits-32)) << 32
+	case numBits <= 96:
+		offset.Lo = uint64(s.reader.readBits(32))
+		offset.Lo |= uint64(s.reader.readBits(32)) << 32
+		offset.Hi = uint64(s.reader.readBits(numBits - 64))
+	default:
+		offset.Lo = uint64(s.reader.readBits(32))
+		offset.Lo |= uint64(s.reader.readBits(32)) << 32
+		offset.Hi = uint64(s.reader.readBits(32))
+		offset.Hi |= uint64(s.reader.readBits(numBits-96)) << 32
+	}
+	return offset
+}
+
+// SerializeInt128 reads a signed 128 bit integer into *value. On success *value is
+// guaranteed to be in [min,max]; values smuggled into the bit headroom of the range
+// fail with ErrValueOutOfRange.
+func (s *ReadStream) SerializeInt128(value *Int128, min, max Int128) error {
+	if min.Cmp(max) >= 0 {
+		panic(panicMinMax)
+	}
+	if s.err != nil {
+		return s.err
+	}
+	numBits := BitsRequired128(min.Uint128(), max.Uint128())
+	if s.reader.bitsRead+int64(numBits) > s.reader.numBits {
+		return s.fail(ErrOverflow)
+	}
+	offset := s.readGroups128(numBits)
+	// compare and add in the unsigned domain: the range may be wider than 2^127
+	if offset.Cmp(max.Uint128().Sub(min.Uint128())) > 0 {
+		return s.fail(ErrValueOutOfRange)
+	}
+	*value = offset.Add(min.Uint128()).Int128()
+	return nil
+}
+
+// SerializeUint128 reads an unsigned 128 bit integer: the low 64 bit half first,
+// then the high half, each half as the low dword then the high dword.
+func (s *ReadStream) SerializeUint128(value *Uint128) error {
+	if s.err != nil {
+		return s.err
+	}
+	if s.reader.bitsRead+128 > s.reader.numBits {
+		return s.fail(ErrOverflow)
+	}
+	var v Uint128
+	v.Lo = uint64(s.reader.readBits(32))
+	v.Lo |= uint64(s.reader.readBits(32)) << 32
+	v.Hi = uint64(s.reader.readBits(32))
+	v.Hi |= uint64(s.reader.readBits(32)) << 32
+	*value = v
+	return nil
+}
+
+// SerializeFixed64 reads a raw fixed point value into *value. On success the raw
+// value is guaranteed to be within [min,max] whole units; raw values smuggled into
+// the bit headroom of the offset encoding fail with ErrValueOutOfRange — reject,
+// never clamp. Round trips are exact.
+func (s *ReadStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
+	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
+	if s.err != nil {
+		return s.err
+	}
+	if s.reader.bitsRead+int64(numBits) > s.reader.numBits {
+		return s.fail(ErrOverflow)
+	}
+	var offset uint64
+	if numBits <= 32 {
+		offset = uint64(s.reader.readBits(numBits))
+	} else {
+		// low dword first, then the high remainder: same convention as SerializeInt64
+		lo := s.reader.readBits(32)
+		hi := s.reader.readBits(numBits - 32)
+		offset = uint64(hi)<<32 | uint64(lo)
+	}
+	if offset > rawRange {
+		return s.fail(ErrValueOutOfRange)
+	}
+	// reconstruct in the unsigned domain: wraps two's complement for negative raw values
+	*value = int64(rawMin + offset)
+	return nil
+}
+
+// SerializeFixed128 reads a raw wide fixed point value into *value. On success the
+// raw value is guaranteed to be within [min,max] whole units; raw values smuggled
+// into the bit headroom of the offset encoding fail with ErrValueOutOfRange —
+// reject, never clamp. integerBits plus fractionBits must equal 128.
+func (s *ReadStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
+	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
+	if s.err != nil {
+		return s.err
+	}
+	if s.reader.bitsRead+int64(numBits) > s.reader.numBits {
+		return s.fail(ErrOverflow)
+	}
+	offset := s.readGroups128(numBits)
+	if offset.Cmp(rawRange) > 0 {
+		return s.fail(ErrValueOutOfRange)
+	}
+	// reconstruct in the unsigned domain: wraps two's complement for negative raw values
+	*value = rawMin.Add(offset).Int128()
+	return nil
+}
+
 // SerializeUint8 reads an unsigned 8 bit integer.
 func (s *ReadStream) SerializeUint8(value *uint8) error {
 	var v uint32

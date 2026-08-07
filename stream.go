@@ -41,6 +41,37 @@ type Stream interface {
 	// number of bits required to represent the range. The full 64 bit range is supported.
 	SerializeInt64(value *int64, min, max int64) error
 
+	// SerializeInt128 serializes a signed 128 bit integer in [min,max], writing only
+	// the number of bits required to represent the range. The full 128 bit range is
+	// supported: the offset from min is computed in the unsigned domain, so ranges
+	// wider than 2^127 are exact. Where the range fits 64 bits or fewer the bytes are
+	// identical to SerializeInt64 over the same bounds, so a field may be widened from
+	// 64 to 128 bits without changing the wire, provided the bounds do not change.
+	SerializeInt128(value *Int128, min, max Int128) error
+
+	// SerializeUint128 serializes an unsigned 128 bit integer. Unlike SerializeInt128
+	// it is not ranged: the wire format is 128 bits raw, the low 64 bit half first,
+	// then the high half, following the lo-then-hi convention of SerializeBits64.
+	SerializeUint128(value *Uint128) error
+
+	// SerializeFixed64 serializes a fixed point value held in an int64 in [min,max]
+	// whole units, writing only the bits required for the raw (scaled) range. *value
+	// is the raw fixed point integer: the real value scaled by 2^fractionBits. The Q
+	// format has integerBits whole unit bits — the sign bit counts toward them for
+	// signed formats — and fractionBits fractional bits, together at most 64. The
+	// bounds are whole units and are part of the wire format, exactly like a ranged
+	// integer's bounds. Round trips are exact: fixed point values are integers
+	// underneath, so unlike compressed floats there is no quantization step. The wire
+	// format is byte identical to SerializeInt64 of the raw value over the raw bounds.
+	SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error
+
+	// SerializeFixed128 serializes a fixed point value held in an Int128, for wide Q
+	// formats like Q112.16 and Q64.64: integerBits plus fractionBits must equal 128.
+	// Everything else matches SerializeFixed64: bounds in whole units, an offset
+	// encoding over the raw (scaled) bounds in the minimal number of bits, and exact
+	// round trips.
+	SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error
+
 	// SerializeUint8 serializes an unsigned 8 bit integer.
 	SerializeUint8(value *uint8) error
 
@@ -238,4 +269,68 @@ func validateBufferSize(bufferSize int) {
 	if bufferSize < 2 || int64(bufferSize) > math.MaxInt32 {
 		panic(panicBufferSize)
 	}
+}
+
+// fixedPointCapacity returns the whole unit bounds a Q format with the given number
+// of integer bits can represent, clamped to the int64 domain the bounds live in. The
+// signedness of the format follows the bounds: a format with a negative min is
+// signed, with the sign bit counting toward integerBits; a format with min >= 0 is
+// unsigned. This mirrors the C++ library, where the signedness comes from the storage
+// type and unsigned storage requires non negative bounds.
+func fixedPointCapacity(integerBits int, signed bool) (minRepresentable, maxRepresentable int64) {
+	if signed {
+		if integerBits >= 65 {
+			return math.MinInt64, math.MaxInt64
+		}
+		minRepresentable = int64(-(uint64(1) << (integerBits - 1)))
+		if integerBits >= 64 {
+			return minRepresentable, math.MaxInt64
+		}
+		return minRepresentable, int64(uint64(1)<<(integerBits-1) - 1)
+	}
+	if integerBits >= 63 {
+		return 0, math.MaxInt64
+	}
+	return 0, int64(uint64(1)<<integerBits - 1)
+}
+
+// fixedPointParams64 validates a fixed point configuration with storage of 64 bits
+// or fewer and computes the wire parameters shared by the write, read and measure
+// implementations of SerializeFixed64: the raw (scaled) bounds are exact integers —
+// the whole unit bounds shifted left by fractionBits in the unsigned domain, where
+// negative bounds wrap two's complement — and the bit count is the bit length of the
+// raw range, exactly as for a ranged integer over the raw bounds.
+func fixedPointParams64(integerBits, fractionBits int, min, max int64) (rawMin, rawRange uint64, numBits int) {
+	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits > 64 || min >= max {
+		panic(panicFixedParams)
+	}
+	minRepresentable, maxRepresentable := fixedPointCapacity(integerBits, min < 0)
+	if min < minRepresentable || max > maxRepresentable {
+		panic(panicFixedBounds)
+	}
+	rawMin = uint64(min) << fractionBits
+	rawMax := uint64(max) << fractionBits
+	rawRange = rawMax - rawMin
+	numBits = BitsRequired64(rawMin, rawMax)
+	return rawMin, rawRange, numBits
+}
+
+// fixedPointParams128 is the wide counterpart of fixedPointParams64, for 128 bit
+// storage: integerBits plus fractionBits must equal 128. The raw offset math runs in
+// the unsigned 128 bit domain, and the bit count is the bit length of the whole unit
+// range plus fractionBits — shifting the range left by fractionBits adds exactly that
+// many bits to its length.
+func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin, rawRange Uint128, numBits int) {
+	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits != 128 || min >= max {
+		panic(panicFixedParams)
+	}
+	minRepresentable, maxRepresentable := fixedPointCapacity(integerBits, min < 0)
+	if min < minRepresentable || max > maxRepresentable {
+		panic(panicFixedBounds)
+	}
+	rawMin = Int128From64(min).Uint128().Lsh(uint(fractionBits))
+	rawMax := Int128From64(max).Uint128().Lsh(uint(fractionBits))
+	rawRange = rawMax.Sub(rawMin)
+	numBits = BitsRequired64(uint64(min), uint64(max)) + fractionBits
+	return rawMin, rawRange, numBits
 }
