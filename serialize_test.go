@@ -1159,6 +1159,109 @@ func TestSerializeStringRoundTrip(t *testing.T) {
 	}
 }
 
+// A string produced by a read must never alias the stream's buffer: overwriting the
+// buffer and reading again must not retroactively change a previously returned string.
+func TestSerializeStringReadDoesNotAliasBuffer(t *testing.T) {
+	buffer := make([]byte, 64)
+
+	writeStream := NewWriteStream(buffer)
+	first := "first message"
+	if err := writeStream.SerializeString(&first, 32); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+	data := writeStream.Data()
+
+	readStream := NewReadStream(data)
+	var value string
+	if err := readStream.SerializeString(&value, 32); err != nil {
+		t.Fatal(err)
+	}
+	saved := value
+
+	// overwrite the wire bytes in place (same length, different content) and read again
+	writeStream.Reset(buffer)
+	second := "FIRST MESSAGE"
+	if err := writeStream.SerializeString(&second, 32); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+
+	readStream.Reset(data)
+	if err := readStream.SerializeString(&value, 32); err != nil {
+		t.Fatal(err)
+	}
+
+	if saved != "first message" {
+		t.Fatalf("previously returned string was mutated by a later read: %q", saved)
+	}
+	if value != "FIRST MESSAGE" {
+		t.Fatalf("expected %q, got %q", "FIRST MESSAGE", value)
+	}
+}
+
+// Re-reading content equal to the string already in *value must keep it without
+// allocating: chat style reads into reused values are allocation free in steady state.
+func TestSerializeStringReadEqualContentDoesNotAllocate(t *testing.T) {
+	buffer := make([]byte, 64)
+
+	writeStream := NewWriteStream(buffer)
+	v := "player one"
+	if err := writeStream.SerializeString(&v, 32); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+	data := writeStream.Data()
+
+	readStream := NewReadStream(data)
+	var value string
+	if err := readStream.SerializeString(&value, 32); err != nil { // first read pays the copy
+		t.Fatal(err)
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		readStream.Reset(data)
+		if err := readStream.SerializeString(&value, 32); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("expected 0 allocations re-reading equal content, got %v", allocs)
+	}
+	if value != "player one" {
+		t.Fatalf("expected %q, got %q", "player one", value)
+	}
+}
+
+// A read of different content with the same length must replace the value: equality is
+// decided on the bytes, never on the length alone.
+func TestSerializeStringReadChangedContentSameLength(t *testing.T) {
+	writeString := func(v string) []byte {
+		buffer := make([]byte, 64)
+		writeStream := NewWriteStream(buffer)
+		if err := writeStream.SerializeString(&v, 32); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+		return writeStream.Data()
+	}
+	dataA := writeString("channel-a")
+	dataB := writeString("channel-b") // same length, last byte differs
+
+	readStream := NewReadStream(dataA)
+	var value string
+	if err := readStream.SerializeString(&value, 32); err != nil {
+		t.Fatal(err)
+	}
+	readStream.Reset(dataB)
+	if err := readStream.SerializeString(&value, 32); err != nil {
+		t.Fatal(err)
+	}
+	if value != "channel-b" {
+		t.Fatalf("expected %q, got %q", "channel-b", value)
+	}
+}
+
 func TestSerializeWideStringRoundTrip(t *testing.T) {
 	values := []string{"", "мир", "привіт, світ!", "😀🚀"} // BMP and astral code points
 

@@ -375,8 +375,12 @@ func (s *ReadStream) SerializeBytes(data []byte) error {
 	return nil
 }
 
-// SerializeString reads a string of fewer than bufferSize bytes into *value with a
-// single allocation. On failure *value is left unmodified.
+// SerializeString reads a string of fewer than bufferSize bytes into *value with at
+// most one allocation: when the incoming bytes equal the current contents of *value the
+// string is kept as is, so re-reading stable strings into the same value is allocation
+// free (the comparison itself does not allocate). When the content differs, *value
+// becomes a fresh copy — a string returned by a read never aliases the stream's buffer
+// and is never modified by a later read. On failure *value is left unmodified.
 func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
 	if s.err != nil {
@@ -392,7 +396,10 @@ func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
 	if int64(length) > s.reader.BitsRemaining()/8 {
 		return s.fail(ErrOverflow)
 	}
-	*value = string(s.reader.readSlice(int(length)))
+	data := s.reader.readSlice(int(length))
+	if *value != string(data) { // the compiler compares without converting: no allocation
+		*value = string(data) // one allocation, only when the content actually changed
+	}
 	return nil
 }
 
