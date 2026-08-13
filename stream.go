@@ -301,7 +301,7 @@ func fixedPointCapacity(integerBits int, signed bool) (minRepresentable, maxRepr
 // negative bounds wrap two's complement — and the bit count is the bit length of the
 // raw range, exactly as for a ranged integer over the raw bounds.
 func fixedPointParams64(integerBits, fractionBits int, min, max int64) (rawMin, rawRange uint64, numBits int) {
-	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits > 64 || min >= max {
+	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits > 64 || min > max {
 		panic(panicFixedParams)
 	}
 	minRepresentable, maxRepresentable := fixedPointCapacity(integerBits, min < 0)
@@ -321,7 +321,7 @@ func fixedPointParams64(integerBits, fractionBits int, min, max int64) (rawMin, 
 // range plus fractionBits — shifting the range left by fractionBits adds exactly that
 // many bits to its length.
 func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin, rawRange Uint128, numBits int) {
-	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits != 128 || min >= max {
+	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits != 128 || min > max {
 		panic(panicFixedParams)
 	}
 	minRepresentable, maxRepresentable := fixedPointCapacity(integerBits, min < 0)
