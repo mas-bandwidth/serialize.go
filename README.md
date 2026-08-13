@@ -178,13 +178,12 @@ If you find this software useful, [please consider sponsoring it](https://github
 
 # License
 
-[MBSL](LICENSE).
+[BSD 3-Clause](LICENSE).
 
 ## Crediting
 
-This library is licensed under the [Más Bandwidth Source License (MBSL)](LICENSE),
-which is BSD 3-Clause plus one clause: products that incorporate it must include
-this credit in their product credits, or in their documentation:
+Licensed [BSD 3-Clause](LICENSE), which asks only that you keep the copyright
+notice. Credit is not required — but if you would like to give it:
 
 > serialize.go by Glenn Fiedler and Rowan Claude
 
