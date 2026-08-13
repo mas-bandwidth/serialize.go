@@ -141,7 +141,7 @@ func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 // SerializeInt writes *value, which must be in [min,max], using only the bits required
 // to represent the range. Returns ErrValueOutOfRange if it is not.
 func (s *WriteStream) SerializeInt(value *int32, min, max int32) error {
-	if min >= max {
+	if min > max {
 		panic(panicMinMax)
 	}
 	v := *value
@@ -160,7 +160,7 @@ func (s *WriteStream) SerializeInt(value *int32, min, max int32) error {
 // SerializeInt64 writes *value, which must be in [min,max], using only the bits required
 // to represent the range. Returns ErrValueOutOfRange if it is not.
 func (s *WriteStream) SerializeInt64(value *int64, min, max int64) error {
-	if min >= max {
+	if min > max {
 		panic(panicMinMax)
 	}
 	v := *value
@@ -214,7 +214,7 @@ func (s *WriteStream) writeGroups128(offset Uint128, numBits int) {
 // are exact. Where the range fits 64 bits or fewer the bytes are identical to
 // SerializeInt64 over the same bounds.
 func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
-	if min.Cmp(max) >= 0 {
+	if min.Cmp(max) > 0 {
 		panic(panicMinMax)
 	}
 	if s.err != nil {

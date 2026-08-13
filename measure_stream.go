@@ -72,7 +72,7 @@ func (s *MeasureStream) SerializeBits64(value *uint64, bits int) error {
 // SerializeInt measures the bits required for the range [min,max]. Like a write, the
 // value must be in range or ErrValueOutOfRange is returned.
 func (s *MeasureStream) SerializeInt(value *int32, min, max int32) error {
-	if min >= max {
+	if min > max {
 		panic(panicMinMax)
 	}
 	if s.err != nil {
@@ -87,7 +87,7 @@ func (s *MeasureStream) SerializeInt(value *int32, min, max int32) error {
 // SerializeInt64 measures the bits required for the range [min,max]. Like a write, the
 // value must be in range or ErrValueOutOfRange is returned.
 func (s *MeasureStream) SerializeInt64(value *int64, min, max int64) error {
-	if min >= max {
+	if min > max {
 		panic(panicMinMax)
 	}
 	if s.err != nil {
@@ -102,7 +102,7 @@ func (s *MeasureStream) SerializeInt64(value *int64, min, max int64) error {
 // SerializeInt128 measures the bits required for the range [min,max]. Like a write,
 // the value must be in range or ErrValueOutOfRange is returned.
 func (s *MeasureStream) SerializeInt128(value *Int128, min, max Int128) error {
-	if min.Cmp(max) >= 0 {
+	if min.Cmp(max) > 0 {
 		panic(panicMinMax)
 	}
 	if s.err != nil {

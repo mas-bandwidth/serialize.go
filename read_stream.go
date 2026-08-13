@@ -93,7 +93,7 @@ func (s *ReadStream) SerializeBits64(value *uint64, bits int) error {
 // in [min,max]; values smuggled into the bit headroom of the range fail with
 // ErrValueOutOfRange.
 func (s *ReadStream) SerializeInt(value *int32, min, max int32) error {
-	if min >= max {
+	if min > max {
 		panic(panicMinMax)
 	}
 	if s.err != nil {
@@ -116,7 +116,7 @@ func (s *ReadStream) SerializeInt(value *int32, min, max int32) error {
 // guaranteed to be in [min,max]; values smuggled into the bit headroom of the range fail
 // with ErrValueOutOfRange.
 func (s *ReadStream) SerializeInt64(value *int64, min, max int64) error {
-	if min >= max {
+	if min > max {
 		panic(panicMinMax)
 	}
 	if s.err != nil {
@@ -172,7 +172,7 @@ func (s *ReadStream) readGroups128(numBits int) Uint128 {
 // guaranteed to be in [min,max]; values smuggled into the bit headroom of the range
 // fail with ErrValueOutOfRange.
 func (s *ReadStream) SerializeInt128(value *Int128, min, max Int128) error {
-	if min.Cmp(max) >= 0 {
+	if min.Cmp(max) > 0 {
 		panic(panicMinMax)
 	}
 	if s.err != nil {
