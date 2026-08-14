@@ -28,7 +28,9 @@ INVARIANTS
   serialize.h, with its tests mirrored and BOTH halves of the compat harness extended.
 - **Malicious packet data never panics.** Reads are bounds-checked and range-validated
   and return errors. Panics are reserved for API misuse only (bits outside [1,32]/[1,64],
-  min >= max, write buffer not a multiple of 8). The fuzz targets enforce this.
+  min > max, write buffer not a multiple of 8). The fuzz targets enforce this.
+  **min == max is legal, not misuse**: the degenerate range costs zero bits (STANDARD.md),
+  and every stream accepts it — only an inverted range panics.
 - **Zero allocations on every serialization path**, asserted with ReportAllocs.
 - **Write buffers must be a multiple of 8 bytes** (the writer stores qwords). The reader
   accepts any length and detects backing-array slack via `cap()` for branchless 64-bit
@@ -61,8 +63,12 @@ published only under serialize.go.
    harness (both halves).
 2. **Malicious packet data never panics.** Every stream read is bounds checked and
    range validated and fails with an error. Panics are reserved for API misuse only
-   (bits out of [1,32]/[1,64], min >= max, write buffer not a multiple of 8 bytes).
-   The fuzz targets enforce this — keep them passing.
+   (bits out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes).
+   The fuzz targets enforce this — keep them passing. A degenerate range where
+   min == max is **not** misuse: STANDARD.md defines it as costing zero bits, and
+   the ranged integer streams accept it (see degenerate_test.go). The one exception
+   is SerializeCompressedFloat32, which still requires a strict min < max — its
+   quantization divides by the range, and the C++ library asserts the same.
 3. **Sticky errors and the control flow rule.** The first error latches on the
    stream; later serialize calls are no-ops that leave values unmodified. Therefore
    any serialized value that controls a loop (count, sentinel bit) must have its
@@ -142,7 +148,13 @@ History: v1.0.1 naming review, v1.0.2 dead code audit, v1.1.0 Continue, v1.2.0 U
 v1.2.1 C++ comparison, v1.2.2 examples/badge/CLAUDE.md, v1.2.3 docs/ split, v1.3.0
 rename to serialize.go, v1.4.0 measure stream 32 bit fix + compat harness/CI
 hardening (minor bump: gorelease counts the added compat package), v1.4.1 CI
-action bumps. Tags up
+action bumps, v1.5.0 relicense to the Más Bandwidth Source License (MBSL) plus
+crediting/FUNDING, v1.6.0 fixed point + 128 bit integers ported from serialize.h
+(new exported API: Uint128/Int128, SerializeFixed64/128) with the read, write and
+string fast paths and the vendored STANDARD.md, v1.7.0 relicense back to BSD
+3-Clause (license changes are tagged as minor here) + ignore tending/, v1.8.0
+the degenerate range (min == max) costs zero bits — nine guards relaxed from
+min >= max to min > max + the STANDARD.md int_relative ladder fix. Tags up
 to v1.2.3 predate the rename and declare the goserialize module path, so they are
 not fetchable as serialize.go — v1.3.0 is the first valid version of the new path
 (gorelease/apicompat cannot compare against the pre-rename tags). After

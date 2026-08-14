@@ -7,6 +7,11 @@
 // (pinned to bytes copied verbatim from the C++ test suite) and extends it with the
 // 64 bit paths the golden test does not cover. Any change here must be mirrored in
 // cpp/compat.cpp, and never changes the wire format: see CLAUDE.md invariant 1.
+//
+// The sequence includes a degenerate range (min == max) in the MIDDLE, which costs
+// zero bits: it must round trip across both languages while leaving every downstream
+// field on exactly the bit it was on before. That is why adding it did not change a
+// single byte of this harness's output.
 package main
 
 import (
@@ -24,6 +29,7 @@ type compatData struct {
 	bits32               uint32
 	intSmall             int32
 	intFull              int32
+	degenerate           int32
 	flag                 bool
 	floatValue           float32
 	compressedFloatValue float32
@@ -50,6 +56,7 @@ func initCompatData() compatData {
 		bits32:               0xDEADBEEF,
 		intSmall:             -37,
 		intFull:              -123456789,
+		degenerate:           42, // min == max: known from the range alone, zero bits on the wire
 		flag:                 true,
 		floatValue:           3.1415926,
 		compressedFloatValue: 5.0, // 5.0 in [0,10] normalizes to exactly 0.5: quantizes identically everywhere
@@ -77,6 +84,8 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 	stream.SerializeBits(&data.bits32, 32)
 	stream.SerializeInt(&data.intSmall, -100, +100)
 	stream.SerializeInt(&data.intFull, math.MinInt32, math.MaxInt32)
+	// the degenerate range: zero bits, and every field below must stay put
+	stream.SerializeInt(&data.degenerate, 42, 42)
 	stream.SerializeBool(&data.flag)
 	stream.SerializeFloat32(&data.floatValue)
 	stream.SerializeCompressedFloat32(&data.compressedFloatValue, 0.0, 10.0, 0.01)
