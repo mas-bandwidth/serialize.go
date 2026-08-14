@@ -6,8 +6,18 @@
     Download serialize.h (v1.4.3) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/main/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.4.3/serialize.h
         c++ -O3 -DNDEBUG -std=c++17 -o bench bench.cpp && ./bench
+
+    THE PIN IS DELIBERATELY BEHIND THE COMPAT HARNESS. compat/cpp/compat.cpp pins
+    v1.6.2 because it needs the release that stopped asserting min < max; this file
+    stays on v1.4.3 because the comparison table published in docs/performance.md was
+    measured against v1.4.3, and CLAUDE.md allows those numbers to be refreshed only
+    from fresh runs on the stated hardware (Apple M3 Ultra, Apple clang 21, -O3
+    -DNDEBUG, best mean of 5 repetitions). Bumping this pin without re-running on that
+    machine would silently invalidate a published comparison: the table would then
+    describe a C++ version nobody measured. So do not "helpfully" unify the two pins.
+    Bump this one only together with a fresh measurement run and a docs update.
 
     Methodology: each benchmark runs 5 repetitions and reports the best mean ns/op,
     matching the spirit of go test -bench with multiple counts.

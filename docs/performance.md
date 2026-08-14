@@ -20,7 +20,7 @@ The writer fills a 64 bit scratch and stores a qword at a time. The reader is ef
 
 # How does it compare to the C++ library?
 
-[bench/cpp/bench.cpp](../bench/cpp/bench.cpp) mirrors the Go benchmark suite one for one against the C++ serialize library (v1.4.3), including a check that the benchmark packet is byte identical between the two implementations. Same machine, Apple clang 21 at `-O3 -DNDEBUG`, best mean of 5 repetitions, with optimization barriers so the compiler cannot delete the work:
+[bench/cpp/bench.cpp](../bench/cpp/bench.cpp) mirrors the Go benchmark suite one for one against the C++ serialize library (v1.4.3), including a check that the benchmark packet serializes to exactly the same 133 bytes on both sides, so the two are measured on the same work. That is a size check, not a proof of byte identity — byte identity is what the cppcompat CI job establishes, by comparing the Go and C++ harness output with `cmp`, and what `TestGoldenWireFormat` pins against bytes copied from the C++ test suite. Same machine, Apple clang 21 at `-O3 -DNDEBUG`, best mean of 5 repetitions, with optimization barriers so the compiler cannot delete the work:
 
 | Benchmark                  | Go (interface) | Go (concrete) | C++ (`-O3 -DNDEBUG`) | C++ advantage |
 |----------------------------|---------------:|--------------:|---------------------:|--------------:|

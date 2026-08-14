@@ -8,9 +8,12 @@
 // 64 bit paths the golden test does not cover. Any change here must be mirrored in
 // cpp/compat.cpp, and never changes the wire format: see CLAUDE.md invariant 1.
 //
-// The sequence includes a degenerate range (min == max) in the MIDDLE, which costs
-// zero bits: it must round trip across both languages while leaving every downstream
-// field on exactly the bit it was on before. That is why adding it did not change a
+// The sequence includes a degenerate range (min == max), which costs zero bits: it
+// must round trip across both languages while leaving every downstream field on
+// exactly the bit it was on before. It sits at serialize call 7 of 24, so 17 fields
+// follow it -- the point is not that it is central but that a great many fields come
+// after it, every one of which would shift and fail the round trip if the degenerate
+// range ever started consuming bit space. That is why adding it did not change a
 // single byte of this harness's output.
 package main
 

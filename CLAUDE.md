@@ -54,13 +54,17 @@ published only under serialize.go.
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
    `TestGoldenWireFormat` pins 112 golden bytes copied verbatim from the C++ test
-   suite, `bench/cpp/bench.cpp` asserts the benchmark packet is byte identical, and
-   the cppcompat CI job round trips the `compat/` harness against the real C++
-   library (pinned serialize.h) on every push and PR: the Go and C++ streams must
-   be byte identical and each side must decode the other's. Never change any
-   encoding without coordinating with the C++ library. When adding serialization
-   features, port them from serialize.h, mirror its tests, and extend the compat
-   harness (both halves).
+   suite, `bench/cpp/bench.cpp` asserts the benchmark packet is the same 133 bytes
+   on both sides (a size check, so both are benchmarked on equal work — not a
+   byte-identity proof), and the cppcompat CI job round trips the `compat/` harness
+   against the real C++ library (pinned serialize.h) on every push and PR: the Go
+   and C++ streams must be byte identical and each side must decode the other's.
+   Byte identity is established by the golden test and cppcompat, not by the
+   benchmark — the `benchmark` CI job is a base-vs-PR benchstat comparison and
+   asserts nothing about bytes at all. Never change any encoding without
+   coordinating with the C++ library. When adding serialization features, port
+   them from serialize.h, mirror its tests, and extend the compat harness (both
+   halves).
 2. **Malicious packet data never panics.** Every stream read is bounds checked and
    range validated and fails with an error. Panics are reserved for API misuse only
    (bits out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes).
