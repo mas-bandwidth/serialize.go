@@ -256,6 +256,26 @@ The writer clamps `(value - min) / delta` to `[0,1]`, multiplies by
 `bits` bits. The reader divides by `max_integer_value`, multiplies by `delta`,
 and adds `min`.
 
+**This arithmetic is `float32`, and the two roundings are part of the format.**
+The product `normalized * max_integer_value` rounds to `float32` BEFORE `0.5`
+is added, and that sum rounds to `float32` before the floor. Two roundings, not
+one. Specifically, an implementation must not:
+
+- widen any step to `double` (or any wider type) before the floor, and
+- contract the multiply and the add into a fused multiply-add, which rounds
+  once instead of twice. Languages that permit contraction must suppress it
+  here — in C and C++ by storing the product through a `float` local (or
+  `-ffp-contract=off`), in Go by an explicit `float32()` conversion around the
+  product. Rust does not fuse unless `mul_add` is called explicitly.
+
+This is not pedantry; it changes the bytes. Over `[0, 10]` at resolution
+`0.01`, the required arithmetic quantizes `0.005` to `1`, `0.025` to `3`,
+`0.105` to `11` and `9.995` to `1000`; widening to `double` yields `0`, `2`,
+`10` and `999`. A value landing exactly on a quantum — `2.5` here — agrees
+under every variant, so a conformance vector built only from such values will
+pass while the wire is wrong. Vectors must include values that land between
+quanta.
+
 Readers must reject an integer greater than `max_integer_value`.
 
 This is lossy by construction: a round trip returns the nearest representable
@@ -383,10 +403,31 @@ differently. This document therefore specifies each operation once, under its
 
 ## Provenance
 
-Written 2026-07-21 by Rowan, by reading the reference implementation and
-verifying every claim against the library's golden test vector. It documents
-the format as it stands; where this document and the implementation disagree,
-the implementation is authoritative and this document is a bug.
+Written 2026-07-21 by Rowan, by reading the then-existing implementation and
+verifying every claim against its golden test vector.
 
-The reference implementation is `serialize.h`. The verifying test vector is
-`golden_wire_bytes` in that file.
+**This document is the format. Where this document and any implementation
+disagree, the implementation is a bug.** There is no reference implementation:
+`serialize.h` is one implementation among five — C, C++, C#, Go and Rust — and
+holds no special authority. It was the first, which is a fact about history and
+not about standing.
+
+Until 2026-08-14 this section said the opposite, and the cost of that sentence
+was measurable. Under it, five implementations quietly disagreed about
+`compressed_float`'s precision and each was, by this document's own terms,
+correct: C quantized in `double`, C++ and Go contracted the multiply and add
+into a single fused multiply-add on arm64, C# and Rust rounded twice in
+`float32`. Four different byte streams from one paragraph, and no divergence
+was formally a defect, because whatever an implementation did was by definition
+the format.
+
+Every normative statement here is testable, by a pinned vector or by an
+explicit refusal test. An implementation conforms when it reproduces every
+vector byte for byte and refuses everything this document says must be refused.
+
+**Conformance vectors must discriminate.** A value taken from the middle of a
+range, or one that lands where every plausible reading agrees, proves nothing —
+the `compressed_float` divergence above survived years of green test suites
+because every pinned value in every implementation landed exactly on a quantum,
+where `float32`, `double` and a fused multiply-add all produce the same answer.
+A vector that cannot fail is not evidence.

@@ -6,9 +6,16 @@ import "testing"
 // is known from the range alone and nothing is written.
 //
 // Every stream used to panic on min >= max, which rejected exactly the case the
-// format defines. The C++ and C ports support it, so this was a cross-language
-// divergence: the same code that works against one runtime aborted against this
-// one.
+// format defines. This was NOT a case of the other ports having already got it
+// right: the whole family relaxed the guard in the same sweep, and the C++ header
+// pinned here at the time (v1.4.3) asserted min < max and aborted on it too.
+//
+// State of the family, verified by reading each repo rather than assuming:
+// the C port accepts min == max on both the 32 and 64 bit paths, and so do the
+// Rust and C# ports. C++ v1.6.2 accepts it through serialize_int, but its
+// serialize_int64 macro still asserts min < max -- so TestDegenerateRange64
+// below covers a case C++ cannot yet round trip, which is why the cross language
+// harness in compat/ exercises the degenerate range on the 32 bit path only.
 func TestDegenerateRangeCostsNothing(t *testing.T) {
 	buffer := make([]byte, 64)
 

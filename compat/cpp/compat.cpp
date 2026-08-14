@@ -4,12 +4,18 @@
     PR: each side writes its stream to a file, the two files must be byte identical,
     and each side must read the other's file back to the exact values.
 
-    Download serialize.h (v1.4.3) from github.com/mas-bandwidth/serialize into this
+    Download serialize.h (v1.6.2) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.4.3/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.6.2/serialize.h
         c++ -O2 -std=c++17 -Wall -o compat compat.cpp
         ./compat write cpp.bin && ./compat read cpp.bin
+
+    The pin is v1.6.2 because that is the C++ release where the degenerate range
+    (min == max) stopped aborting: up to and including v1.4.3 the library asserted
+    min < max, so a debug build died on exactly the case the format defines. Build
+    with asserts ON — they are the C++ half of "API misuse panics", and stripping
+    them with -DNDEBUG would hide the divergence this harness exists to catch.
 
     Any change to the value sequence must be mirrored in ../main.go, and never changes
     the wire format: see CLAUDE.md invariant 1.
@@ -30,6 +36,7 @@ struct CompatData
     uint32_t bits32;
     int32_t intSmall;
     int32_t intFull;
+    int32_t degenerate;
     bool flag;
     float floatValue;
     float compressedFloatValue;
@@ -56,6 +63,7 @@ struct CompatData
         bits32 = 0xDEADBEEF;
         intSmall = -37;
         intFull = -123456789;
+        degenerate = 42;                        // min == max: known from the range alone, zero bits on the wire
         flag = true;
         floatValue = 3.1415926f;
         compressedFloatValue = 5.0f;            // 5.0 in [0,10] normalizes to exactly 0.5: quantizes identically everywhere
@@ -84,6 +92,7 @@ struct CompatData
         serialize_bits( stream, bits32, 32 );
         serialize_int( stream, intSmall, -100, +100 );
         serialize_int( stream, intFull, INT32_MIN, INT32_MAX );
+        serialize_int( stream, degenerate, 42, 42 );    // the degenerate range: zero bits, and every field below must stay put
         serialize_bool( stream, flag );
         serialize_float( stream, floatValue );
         serialize_compressed_float( stream, compressedFloatValue, 0.0f, 10.0f, 0.01f );
@@ -112,6 +121,7 @@ struct CompatData
             && bits32 == other.bits32
             && intSmall == other.intSmall
             && intFull == other.intFull
+            && degenerate == other.degenerate
             && flag == other.flag
             && floatValue == other.floatValue
             && compressedFloatValue == other.compressedFloatValue
