@@ -348,7 +348,17 @@ func (s *WriteStream) SerializeCompressedFloat32(value *float32, min, max, resol
 	}
 	// the clamp bounds the integer value to [0, maxIntegerValue], so it is already
 	// masked to bits
-	integerValue := uint32(math.Floor(float64(normalizedValue*float32(maxIntegerValue) + 0.5)))
+	//
+	// The inner float32() around the product is LOAD BEARING. STANDARD.md
+	// requires float32 arithmetic with TWO roundings — the product rounds
+	// before 0.5 is added — and Go permits fusing a multiply and an add into a
+	// single FMA unless a conversion forces the intermediate rounding. arm64
+	// takes that permission: without this conversion the line compiles to one
+	// FMADDS, rounds once, and writes 0 where every other runtime writes 1 for
+	// value 0.005 over [0, 10] at resolution 0.01. amd64 emits MULSS+ADDSS and
+	// agrees, so CI on x86 stays green while Apple Silicon emits different
+	// bytes. Do not "simplify" this.
+	integerValue := uint32(math.Floor(float64(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)))
 	return s.writeBits(integerValue, bits)
 }
 
