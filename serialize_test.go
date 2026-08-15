@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -1126,7 +1127,10 @@ func TestAlignValidation(t *testing.T) {
 }
 
 func TestSerializeStringRoundTrip(t *testing.T) {
-	values := []string{"", "a", "hello world!", "héllo wörld 😀", string(make([]byte, 255))}
+	// the max length vector was 255 NUL bytes before the reader-validation ruling;
+	// interior NUL is now refused on read, so max length is exercised with a
+	// conforming payload of the same length
+	values := []string{"", "a", "hello world!", "héllo wörld 😀", strings.Repeat("x", 255)}
 
 	for _, expected := range values {
 		buffer := make([]byte, 512)
@@ -1385,6 +1389,106 @@ func TestSerializeWideStringUTF16Wire(t *testing.T) {
 	overflow := "\U0001F600\U0001F680"
 	if err := writeStream.SerializeWideString(&overflow, 4); !errors.Is(err, ErrValueOutOfRange) {
 		t.Fatalf("expected ErrValueOutOfRange for four code units against bufferSize 4, got %v", err)
+	}
+}
+
+// TestReaderContentValidation pins the reader-validation ruling (2026-08-15): the
+// well-formedness rules under string and wstring bind the READ side, because readers
+// face untrusted bytes and refusal rules are format. Four doctored streams, one per
+// refusal — none producible by a conforming writer: interior NUL cannot occur when
+// the length derives from the NUL-terminated form (and accepting one hands C interop
+// two disagreeing lengths for the same payload), and well-formed UTF-8/UTF-16 is the
+// writer's obligation. The write path is untouched: writes are trusted, per doctrine.
+//
+// Red-then-green: each stream below was shown ACCEPTED by the reader with its check
+// temporarily inverted or removed (streams (a), (b) and (d) predate their checks and
+// were accepted by the unmodified reader; stream (c) was accepted with the surrogate
+// arm of the group check commented out), so each check is what refuses its stream.
+func TestReaderContentValidation(t *testing.T) {
+	// narrow doctored streams: length prefix + align + raw payload bytes, the exact
+	// wire shape of serialize_string against bufferSize 64
+	narrowStream := func(payload []byte) []byte {
+		buffer := make([]byte, 72)
+		writeStream := NewWriteStream(buffer)
+		length := int32(len(payload))
+		writeStream.SerializeInt(&length, 0, 63)
+		writeStream.SerializeAlign()
+		writeStream.SerializeBytes(payload)
+		writeStream.Flush()
+		return writeStream.Data()
+	}
+	// wide doctored streams: length prefix + one 32 bit group per unit, no align
+	wideStream := func(groups []uint32) []byte {
+		buffer := make([]byte, 72)
+		writeStream := NewWriteStream(buffer)
+		length := int32(len(groups))
+		writeStream.SerializeInt(&length, 0, 63)
+		for _, group := range groups {
+			g := group
+			writeStream.SerializeBits(&g, 32)
+		}
+		writeStream.Flush()
+		return writeStream.Data()
+	}
+
+	refusals := []struct {
+		name string
+		data []byte
+		read func(s *ReadStream, value *string) error
+	}{
+		{"(a) string: invalid UTF-8", narrowStream([]byte{'h', 0xFF, 'i'}),
+			func(s *ReadStream, value *string) error { return s.SerializeString(value, 64) }},
+		// 0x00 is a valid UTF-8 byte, so this stream isolates the NUL check from (a)
+		{"(b) string: interior NUL", narrowStream([]byte{'h', 0x00, 'i'}),
+			func(s *ReadStream, value *string) error { return s.SerializeString(value, 64) }},
+		{"(c) wstring: unpaired surrogate", wideStream([]uint32{'A', 0xD800, 'B'}),
+			func(s *ReadStream, value *string) error { return s.SerializeWideString(value, 64) }},
+		// 0x0000 is a valid UTF-16 code unit and no surrogate, isolating this from (c)
+		{"(d) wstring: interior NUL", wideStream([]uint32{'A', 0x0000, 'B'}),
+			func(s *ReadStream, value *string) error { return s.SerializeWideString(value, 64) }},
+	}
+	for _, refusal := range refusals {
+		readStream := NewReadStream(refusal.data)
+		value := "unmodified"
+		if err := refusal.read(readStream, &value); !errors.Is(err, ErrValueOutOfRange) {
+			t.Fatalf("%s: expected ErrValueOutOfRange, got %v", refusal.name, err)
+		}
+		if value != "unmodified" {
+			t.Fatalf("%s: value must be left unmodified on refusal, got %q", refusal.name, value)
+		}
+		// the refusal is terminal: the error latches and later reads are no-ops
+		if err := readStream.Err(); !errors.Is(err, ErrValueOutOfRange) {
+			t.Fatalf("%s: refusal must latch on the stream, got %v", refusal.name, err)
+		}
+		var next uint32
+		if err := readStream.SerializeBits(&next, 8); !errors.Is(err, ErrValueOutOfRange) {
+			t.Fatalf("%s: reads after refusal must return the latched error, got %v", refusal.name, err)
+		}
+	}
+
+	// control: conforming payloads still round trip through the same call sites —
+	// multibyte UTF-8 on the narrow path, a surrogate pair on the wide path
+	buffer := make([]byte, 72)
+	writeStream := NewWriteStream(buffer)
+	narrow := "héllo"
+	wide := "a\U0001F600"
+	if err := writeStream.SerializeString(&narrow, 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStream.SerializeWideString(&wide, 64); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+	readStream := NewReadStream(writeStream.Data())
+	var readNarrow, readWide string
+	if err := readStream.SerializeString(&readNarrow, 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := readStream.SerializeWideString(&readWide, 64); err != nil {
+		t.Fatal(err)
+	}
+	if readNarrow != narrow || readWide != wide {
+		t.Fatalf("control round trip changed: %q %q", readNarrow, readWide)
 	}
 }
 

@@ -1,8 +1,10 @@
 package serialize
 
 import (
+	"bytes"
 	"math"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // ReadStream reads bitpacked data from a buffer. It wraps BitReader with bounds and
@@ -393,7 +395,15 @@ func (s *ReadStream) SerializeBytes(data []byte) error {
 // string is kept as is, so re-reading stable strings into the same value is allocation
 // free (the comparison itself does not allocate). When the content differs, *value
 // becomes a fresh copy — a string returned by a read never aliases the stream's buffer
-// and is never modified by a later read. On failure *value is left unmodified.
+// and is never modified by a later read.
+//
+// The payload is validated: a NUL byte or malformed UTF-8 fails the read with
+// ErrValueOutOfRange. Neither can come from a conforming writer — the length derives
+// from the NUL-terminated form, so a transmitted NUL would give the same payload two
+// disagreeing lengths in C interop, and well-formed UTF-8 is the writer's contract
+// (STANDARD.md string). Readers face untrusted bytes, so both rules are enforced
+// here, in every build. Arbitrary byte payloads belong to SerializeBytes. On failure
+// *value is left unmodified.
 func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
 	if s.err != nil {
@@ -410,6 +420,14 @@ func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
 		return s.fail(ErrOverflow)
 	}
 	data := s.reader.readSlice(int(length))
+	if bytes.IndexByte(data, 0) >= 0 {
+		// an interior NUL: impossible from a conforming writer, and the
+		// two-lengths smuggling primitive if accepted
+		return s.fail(ErrValueOutOfRange)
+	}
+	if !utf8.Valid(data) {
+		return s.fail(ErrValueOutOfRange)
+	}
 	if *value != string(data) { // the compiler compares without converting: no allocation
 		*value = string(data) // one allocation, only when the content actually changed
 	}
@@ -419,10 +437,12 @@ func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
 // SerializeWideString reads a string stored as 32 bits per UTF-16 code unit into
 // *value, recombining surrogate pairs into the astral code points they encode
 // (STANDARD.md: each group carries one UTF-16 code unit, so every platform produces
-// identical bytes). Groups a Go string cannot hold fail with ErrValueOutOfRange
-// rather than truncating: values above 0xFFFF are not UTF-16 code units, and an
-// unpaired surrogate — a writer contract violation on the wire — has no UTF-8
-// representation. On failure *value is left unmodified.
+// identical bytes). The payload is validated, ErrValueOutOfRange on refusal: values
+// above 0xFFFF are not UTF-16 code units, an unpaired surrogate is malformed UTF-16,
+// and a zero group is an interior NUL — impossible from a conforming writer, whose
+// length derives from the NUL-terminated form, and the same two-lengths smuggling
+// primitive the narrow path refuses. Readers face untrusted bytes, so these rules
+// are enforced here, in every build. On failure *value is left unmodified.
 func (s *ReadStream) SerializeWideString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
 	if s.err != nil {
@@ -439,6 +459,11 @@ func (s *ReadStream) SerializeWideString(value *string, bufferSize int) error {
 	runes := make([]rune, 0, length)
 	for i := int32(0); i < length; i++ {
 		unit := s.reader.readBits(32)
+		if unit == 0 {
+			// an interior NUL: impossible from a conforming writer, and the
+			// two-lengths smuggling primitive if accepted
+			return s.fail(ErrValueOutOfRange)
+		}
 		if unit > 0xFFFF || (unit >= 0xDC00 && unit <= 0xDFFF) {
 			// not a UTF-16 code unit, or a low surrogate with no high surrogate before it
 			return s.fail(ErrValueOutOfRange)
