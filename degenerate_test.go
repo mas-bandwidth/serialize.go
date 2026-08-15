@@ -102,3 +102,122 @@ func TestDegenerateRange64(t *testing.T) {
 		t.Errorf("read back %d, want -42", out)
 	}
 }
+
+// A degenerate FIXED range costs zero bits too, on the narrow path. The raw
+// value is min << fractionBits, recovered from the range alone.
+func TestDegenerateRangeFixed64(t *testing.T) {
+	buffer := make([]byte, 64)
+
+	w := NewWriteStream(buffer)
+	v := int64(-7) << 16 // -7.0 in Q48.16
+	after := int32(3)
+	if err := w.SerializeFixed64(&v, 48, 16, -7, -7); err != nil {
+		t.Fatalf("write degenerate: %v", err)
+	}
+	if got := w.BitsProcessed(); got != 0 {
+		t.Errorf("degenerate fixed64 wrote %d bits, want 0", got)
+	}
+	if err := w.SerializeInt(&after, 0, 7); err != nil {
+		t.Fatalf("write after: %v", err)
+	}
+	if got := w.BitsProcessed(); got != 3 {
+		t.Errorf("after the degenerate fixed64 the stream is at %d bits, want 3", got)
+	}
+	w.Flush()
+
+	r := NewReadStream(buffer[:w.BytesProcessed()])
+	var out int64
+	var readAfter int32
+	if err := r.SerializeFixed64(&out, 48, 16, -7, -7); err != nil {
+		t.Fatalf("read degenerate: %v", err)
+	}
+	if want := int64(-7) << 16; out != want {
+		t.Errorf("degenerate fixed64 read back %d, want %d", out, want)
+	}
+	if err := r.SerializeInt(&readAfter, 0, 7); err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if readAfter != 3 {
+		t.Errorf("after read back %d, want 3", readAfter)
+	}
+
+	m := NewMeasureStream()
+	measured := int64(-7) << 16
+	if err := m.SerializeFixed64(&measured, 48, 16, -7, -7); err != nil {
+		t.Fatalf("measure degenerate: %v", err)
+	}
+	if got := m.BitsProcessed(); got != 0 {
+		t.Errorf("measure says the degenerate fixed64 costs %d bits, want 0", got)
+	}
+}
+
+// ...and the SAME zero bits across the 64/128 storage boundary. This library
+// used to disagree with ITSELF here (serialize#54): fixedPointParams64 costs a
+// degenerate range zero bits, while fixedPointParams128 computed
+// BitsRequired64(min, max) + fractionBits — fractionBits ZEROS when min == max.
+// One declared field, two wire encodings, selected by an internal storage-width
+// detail: 0 bits for Q48.16 and 16 bits for Q112.16 over identical bounds.
+// The ruling (schema enactment, 2026-08-15) pins min == max at zero bits on
+// EVERY storage width.
+func TestDegenerateRangeFixed128(t *testing.T) {
+	configs := []struct {
+		name                      string
+		integerBits, fractionBits int
+		unit                      int64
+	}{
+		{"Q112.16 positive", 112, 16, 9},
+		{"Q112.16 negative", 112, 16, -9},
+		{"Q64.64 zero", 64, 64, 0}, // the fraction alone would have cost a full 64 bit field
+	}
+	for _, cfg := range configs {
+		t.Run(cfg.name, func(t *testing.T) {
+			buffer := make([]byte, 64)
+			raw := Int128From64(cfg.unit).Uint128().Lsh(uint(cfg.fractionBits)).Int128()
+
+			w := NewWriteStream(buffer)
+			v := raw
+			after := int32(3)
+			if err := w.SerializeFixed128(&v, cfg.integerBits, cfg.fractionBits, cfg.unit, cfg.unit); err != nil {
+				t.Fatalf("write degenerate: %v", err)
+			}
+			if got := w.BitsProcessed(); got != 0 {
+				t.Errorf("degenerate fixed128 wrote %d bits, want 0 (not fractionBits)", got)
+			}
+			if err := w.SerializeInt(&after, 0, 7); err != nil {
+				t.Fatalf("write after: %v", err)
+			}
+			if got := w.BitsProcessed(); got != 3 {
+				t.Errorf("after the degenerate fixed128 the stream is at %d bits, want 3", got)
+			}
+			w.Flush()
+
+			r := NewReadStream(buffer[:w.BytesProcessed()])
+			var out Int128
+			var readAfter int32
+			if err := r.SerializeFixed128(&out, cfg.integerBits, cfg.fractionBits, cfg.unit, cfg.unit); err != nil {
+				t.Fatalf("read degenerate: %v", err)
+			}
+			if out != raw {
+				t.Errorf("degenerate fixed128 read back %+v, want %+v (recovered from the range)", out, raw)
+			}
+			if got := r.BitsProcessed(); got != 0 {
+				t.Errorf("degenerate fixed128 read %d bits, want 0", got)
+			}
+			if err := r.SerializeInt(&readAfter, 0, 7); err != nil {
+				t.Fatalf("read after: %v", err)
+			}
+			if readAfter != 3 {
+				t.Errorf("after read back %d, want 3", readAfter)
+			}
+
+			m := NewMeasureStream()
+			measured := raw
+			if err := m.SerializeFixed128(&measured, cfg.integerBits, cfg.fractionBits, cfg.unit, cfg.unit); err != nil {
+				t.Fatalf("measure degenerate: %v", err)
+			}
+			if got := m.BitsProcessed(); got != 0 {
+				t.Errorf("measure says the degenerate fixed128 costs %d bits, want 0", got)
+			}
+		})
+	}
+}
