@@ -10,11 +10,22 @@
 //
 // The sequence includes a degenerate range (min == max), which costs zero bits: it
 // must round trip across both languages while leaving every downstream field on
-// exactly the bit it was on before. It sits at serialize call 7 of 24, so 17 fields
+// exactly the bit it was on before. It sits at serialize call 7 of 26, so 19 fields
 // follow it -- the point is not that it is central but that a great many fields come
 // after it, every one of which would shift and fail the round trip if the degenerate
 // range ever started consuming bit space. That is why adding it did not change a
 // single byte of this harness's output.
+//
+// The three compressed floats are chosen deliberately. 5.0 lands exactly on a
+// quantum and agrees under float32, double and FMA alike -- for years it was the
+// ONLY compressed float vector in the family, which is how an arm64 writer that
+// fused the quantization into a single FMA shipped with every gate green. The two
+// fields after it discriminate: 0.005 sits half a quantum above min, where one
+// rounding and two roundings disagree about the written integer, and -42.573 runs
+// the same arithmetic over a non-zero min, exercising the (value - min) and + min
+// steps the [0,10] ranges never touch. Both are lossy on purpose -- the reader
+// recovers the nearest quantum, not the written value -- so the read side compares
+// against expectedCompatData, which pins the exact reconstructions.
 package main
 
 import (
@@ -36,6 +47,8 @@ type compatData struct {
 	flag                 bool
 	floatValue           float32
 	compressedFloatValue float32
+	compressedFloatHalf  float32
+	compressedFloatShift float32
 	doubleValue          float64
 	uint8Value           uint8
 	uint16Value          uint16
@@ -62,7 +75,9 @@ func initCompatData() compatData {
 		degenerate:           42, // min == max: known from the range alone, zero bits on the wire
 		flag:                 true,
 		floatValue:           3.1415926,
-		compressedFloatValue: 5.0, // 5.0 in [0,10] normalizes to exactly 0.5: quantizes identically everywhere
+		compressedFloatValue: 5.0,     // on-quantum anchor: agrees under float32, double and FMA alike, so it cannot discriminate
+		compressedFloatHalf:  0.005,   // half a quantum above min: an FMA rounds once and writes 0 where the format requires 1
+		compressedFloatShift: -42.573, // off-quantum over a non-zero min: exercises the (value - min) and + min steps
 		doubleValue:          1.0 / 3.0,
 		uint8Value:           0x7F,
 		uint16Value:          0x1234,
@@ -79,6 +94,18 @@ func initCompatData() compatData {
 	}
 }
 
+// expectedCompatData is what a conformant reader recovers from the wire. It differs
+// from initCompatData only in the two off-quantum compressed floats: compression is
+// lossy by construction, the reader returns the nearest quantum, and the exact
+// float32 reconstructions are pinned here as hex literals so both language halves
+// demand bit-identical results. An FMA in either reader changes these bits.
+func expectedCompatData() compatData {
+	data := initCompatData()
+	data.compressedFloatHalf = 0x1.47ae16p-07   // decode(1):    float32(1/1000) * 10 + 0, two roundings
+	data.compressedFloatShift = -0x1.548f5cp+05 // decode(5743): float32(5743/20000) * 200 - 100, two roundings
+	return data
+}
+
 func serializeCompat(stream serialize.Stream, data *compatData) error {
 	const relativeBase = 100
 	stream.SerializeBits(&data.bits4, 4)
@@ -92,6 +119,8 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 	stream.SerializeBool(&data.flag)
 	stream.SerializeFloat32(&data.floatValue)
 	stream.SerializeCompressedFloat32(&data.compressedFloatValue, 0.0, 10.0, 0.01)
+	stream.SerializeCompressedFloat32(&data.compressedFloatHalf, 0.0, 10.0, 0.01)
+	stream.SerializeCompressedFloat32(&data.compressedFloatShift, -100.0, 100.0, 0.01)
 	stream.SerializeFloat64(&data.doubleValue)
 	stream.SerializeUint8(&data.uint8Value)
 	stream.SerializeUint16(&data.uint16Value)
@@ -130,7 +159,7 @@ func read(path string) error {
 	if err := serializeCompat(stream, &data); err != nil {
 		return fmt.Errorf("read stream failed: %w", err)
 	}
-	if expected := initCompatData(); data != expected {
+	if expected := expectedCompatData(); data != expected {
 		return fmt.Errorf("decoded values do not match:\nexpected %+v\ngot      %+v", expected, data)
 	}
 	return nil
