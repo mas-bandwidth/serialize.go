@@ -1,7 +1,5 @@
 package serialize
 
-import "unicode/utf8"
-
 // MeasureStream counts how many bits it would take to serialize something, without
 // writing any data. It acts like a write stream (IsWriting is true), so a unified
 // serialize function measures the exact same fields it would write.
@@ -201,15 +199,16 @@ func (s *MeasureStream) SerializeString(value *string, bufferSize int) error {
 	return s.measure(int64(length) * 8)
 }
 
-// SerializeWideString measures the length prefix plus 32 bits per code point. Like a
-// write, the string must fit in bufferSize-1 code points or ErrValueOutOfRange is
+// SerializeWideString measures the length prefix plus 32 bits per UTF-16 code unit —
+// astral code points cost two units, exactly as the write stream splits them. Like a
+// write, the string must fit in bufferSize-1 code units or ErrValueOutOfRange is
 // returned.
 func (s *MeasureStream) SerializeWideString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
 	if s.err != nil {
 		return s.err
 	}
-	length := int32(utf8.RuneCountInString(*value))
+	length := int32(utf16Length(*value))
 	if length >= int32(bufferSize) {
 		return s.fail(ErrValueOutOfRange)
 	}

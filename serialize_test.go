@@ -1285,23 +1285,106 @@ func TestSerializeWideStringRoundTrip(t *testing.T) {
 		}
 	}
 
-	// invalid code points (surrogates, values above 0x10FFFF) must be rejected on read
-	invalidCodePoints := []uint32{0xD800, 0xDFFF, 0x110000, 0xFFFFFFFF}
-	for _, codePoint := range invalidCodePoints {
-		buffer := make([]byte, 16)
+	// groups a Go string cannot hold must be rejected on read: values above 0xFFFF
+	// are not UTF-16 code units (0x1F600 is the OLD astral wire — one code point per
+	// group — and must not decode), and unpaired surrogates have no UTF-8
+	// representation. Each vector is a full group sequence, malformed as described.
+	invalidGroupSequences := []struct {
+		name   string
+		groups []uint32
+	}{
+		{"lone high surrogate", []uint32{0xD800}},
+		{"low surrogate first", []uint32{0xDFFF}},
+		{"high surrogate not followed by a low surrogate", []uint32{0xD83D, 0x0041}},
+		{"high surrogate followed by a high surrogate", []uint32{0xD83D, 0xD83D}},
+		{"raw astral code point: the old wire", []uint32{0x1F600}},
+		{"above the code point space", []uint32{0x110000}},
+		{"all bits set", []uint32{0xFFFFFFFF}},
+	}
+	for _, sequence := range invalidGroupSequences {
+		buffer := make([]byte, 24)
 
 		writeStream := NewWriteStream(buffer)
-		length := int32(1)
+		length := int32(len(sequence.groups))
 		writeStream.SerializeInt(&length, 0, 63) // length prefix for bufferSize 64
-		cp := codePoint
-		writeStream.SerializeBits(&cp, 32)
+		for _, group := range sequence.groups {
+			g := group
+			writeStream.SerializeBits(&g, 32)
+		}
 		writeStream.Flush()
 
 		readStream := NewReadStream(buffer)
 		var value string
 		if err := readStream.SerializeWideString(&value, 64); !errors.Is(err, ErrValueOutOfRange) {
-			t.Fatalf("code point %#x: expected ErrValueOutOfRange, got %v", codePoint, err)
+			t.Fatalf("%s: expected ErrValueOutOfRange, got %v", sequence.name, err)
 		}
+		if value != "" {
+			t.Fatalf("%s: value must be left unmodified on failure, got %q", sequence.name, value)
+		}
+	}
+}
+
+func TestSerializeWideStringUTF16Wire(t *testing.T) {
+	// STANDARD.md: each 32 bit group carries one UTF-16 code unit, so an astral code
+	// point is TWO groups — a surrogate pair — and the length prefix counts code
+	// units, not code points. U+1F600 encodes as 0xD83D 0xDE00: this pins the exact
+	// wire, the bytes a 2 byte wchar_t C++ platform has always produced.
+	buffer := make([]byte, 32)
+
+	writeStream := NewWriteStream(buffer)
+	v := "a\U0001F600" // one basic-plane code point + one astral: three code units
+	if err := writeStream.SerializeWideString(&v, 64); err != nil {
+		t.Fatal(err)
+	}
+	if got := writeStream.BitsProcessed(); got != 6+3*32 {
+		t.Fatalf("expected %d bits (6 bit length prefix + three 32 bit groups), got %d", 6+3*32, got)
+	}
+	writeStream.Flush()
+
+	readStream := NewReadStream(writeStream.Data())
+	var length int32
+	readStream.SerializeInt(&length, 0, 63)
+	if length != 3 {
+		t.Fatalf("length prefix must count UTF-16 code units: expected 3, got %d", length)
+	}
+	expectedGroups := []uint32{'a', 0xD83D, 0xDE00} // 'a', then the U+1F600 surrogate pair
+	for i, expected := range expectedGroups {
+		var group uint32
+		readStream.SerializeBits(&group, 32)
+		if group != expected {
+			t.Fatalf("group %d: expected %#06x, got %#06x", i, expected, group)
+		}
+	}
+	if err := readStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	// and the pair recombines on read
+	readStream = NewReadStream(writeStream.Data())
+	var value string
+	if err := readStream.SerializeWideString(&value, 64); err != nil {
+		t.Fatal(err)
+	}
+	if value != "a\U0001F600" {
+		t.Fatalf("expected %q, got %q", "a\U0001F600", value)
+	}
+
+	// the measure stream agrees with the write stream on the unit count
+	measureStream := NewMeasureStream()
+	m := "a\U0001F600"
+	if err := measureStream.SerializeWideString(&m, 64); err != nil {
+		t.Fatal(err)
+	}
+	if measureStream.BitsProcessed() != writeStream.BitsProcessed() {
+		t.Fatalf("measure disagrees with write: %d vs %d bits", measureStream.BitsProcessed(), writeStream.BitsProcessed())
+	}
+
+	// bufferSize bounds the length in code units: two astral code points are four
+	// units, one too many for bufferSize 4 (string + null must fit, C++ convention)
+	writeStream = NewWriteStream(make([]byte, 32))
+	overflow := "\U0001F600\U0001F680"
+	if err := writeStream.SerializeWideString(&overflow, 4); !errors.Is(err, ErrValueOutOfRange) {
+		t.Fatalf("expected ErrValueOutOfRange for four code units against bufferSize 4, got %v", err)
 	}
 }
 
