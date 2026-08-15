@@ -357,7 +357,17 @@ func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolu
 		return s.fail(ErrValueOutOfRange)
 	}
 	normalizedValue := float32(integerValue) / float32(maxIntegerValue)
-	*value = normalizedValue*delta + min
+	// The float32() around the product is LOAD BEARING, for the same reason as
+	// the writer's: STANDARD.md pins this arithmetic to float32, the product
+	// rounds before min is added, and Go permits contracting the multiply and
+	// the add into a single FMA unless a conversion forces the intermediate
+	// rounding. arm64 takes that permission: fused, integer 384 over
+	// [-100, 100] at resolution 0.01 decodes to -96.159996 where two roundings
+	// give -96.160004, so an Apple Silicon reader disagrees with every other
+	// runtime about what it just read. A zero min hides the difference (adding
+	// zero is exact), which is why the writer's divergence was found first.
+	// Do not "simplify" this.
+	*value = float32(normalizedValue*delta) + min
 	return nil
 }
 

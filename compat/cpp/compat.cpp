@@ -4,18 +4,23 @@
     PR: each side writes its stream to a file, the two files must be byte identical,
     and each side must read the other's file back to the exact values.
 
-    Download serialize.h (v1.6.2) from github.com/mas-bandwidth/serialize into this
+    Download serialize.h (v1.7.0) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.6.2/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.7.0/serialize.h
         c++ -O2 -std=c++17 -Wall -o compat compat.cpp
         ./compat write cpp.bin && ./compat read cpp.bin
 
-    The pin is v1.6.2 because that is the C++ release where the degenerate range
-    (min == max) stopped aborting: up to and including v1.4.3 the library asserted
-    min < max, so a debug build died on exactly the case the format defines. Build
-    with asserts ON — they are the C++ half of "API misuse panics", and stripping
-    them with -DNDEBUG would hide the divergence this harness exists to catch.
+    The pin is v1.7.0 because that is the C++ release whose writer forces the
+    intermediate rounding in compressed_float. The harness now carries a vector
+    chosen to catch a contracted (FMA) quantization, and against v1.6.2 the check
+    is circular on arm64: clang contracts v1.6.2's writer at -O2 exactly like a
+    broken Go writer, both halves write the same wrong byte, and the gate passes
+    buggy-against-buggy. The older requirement still holds too: the degenerate
+    range (min == max) must not abort, which every release since v1.6.2
+    guarantees. Build with asserts ON — they are the C++ half of "API misuse
+    panics", and stripping them with -DNDEBUG would hide the divergence this
+    harness exists to catch.
 
     Any change to the value sequence must be mirrored in ../main.go, and never changes
     the wire format: see CLAUDE.md invariant 1.
@@ -40,6 +45,8 @@ struct CompatData
     bool flag;
     float floatValue;
     float compressedFloatValue;
+    float compressedFloatHalf;
+    float compressedFloatShift;
     double doubleValue;
     uint8_t uint8Value;
     uint16_t uint16Value;
@@ -66,7 +73,9 @@ struct CompatData
         degenerate = 42;                        // min == max: known from the range alone, zero bits on the wire
         flag = true;
         floatValue = 3.1415926f;
-        compressedFloatValue = 5.0f;            // 5.0 in [0,10] normalizes to exactly 0.5: quantizes identically everywhere
+        compressedFloatValue = 5.0f;            // on-quantum anchor: agrees under float32, double and FMA alike, so it cannot discriminate
+        compressedFloatHalf = 0.005f;           // half a quantum above min: an FMA rounds once and writes 0 where the format requires 1
+        compressedFloatShift = -42.573f;        // off-quantum over a non-zero min: exercises the (value - min) and + min steps
         doubleValue = 1.0 / 3.0;
         uint8Value = 0x7F;
         uint16Value = 0x1234;
@@ -83,6 +92,18 @@ struct CompatData
         int64Range = 4123456789LL;
     }
 
+    // What a conformant reader recovers from the wire. Differs from Init only in
+    // the two off-quantum compressed floats: compression is lossy by construction,
+    // the reader returns the nearest quantum, and the exact float32 reconstructions
+    // are pinned as hex literals so both language halves demand bit-identical
+    // results. An FMA in either reader changes these bits.
+    void InitExpected()
+    {
+        Init();
+        compressedFloatHalf = 0x1.47ae16p-7f;   // decode(1):    float32(1/1000) * 10 + 0, two roundings
+        compressedFloatShift = -0x1.548f5cp+5f; // decode(5743): float32(5743/20000) * 200 - 100, two roundings
+    }
+
     template <typename Stream> bool Serialize( Stream & stream )
     {
         const int32_t relativeBase = 100;
@@ -96,6 +117,8 @@ struct CompatData
         serialize_bool( stream, flag );
         serialize_float( stream, floatValue );
         serialize_compressed_float( stream, compressedFloatValue, 0.0f, 10.0f, 0.01f );
+        serialize_compressed_float( stream, compressedFloatHalf, 0.0f, 10.0f, 0.01f );
+        serialize_compressed_float( stream, compressedFloatShift, -100.0f, 100.0f, 0.01f );
         serialize_double( stream, doubleValue );
         serialize_uint8( stream, uint8Value );
         serialize_uint16( stream, uint16Value );
@@ -125,6 +148,8 @@ struct CompatData
             && flag == other.flag
             && floatValue == other.floatValue
             && compressedFloatValue == other.compressedFloatValue
+            && compressedFloatHalf == other.compressedFloatHalf
+            && compressedFloatShift == other.compressedFloatShift
             && doubleValue == other.doubleValue
             && uint8Value == other.uint8Value
             && uint16Value == other.uint16Value
@@ -201,7 +226,7 @@ static int Read( const char * path )
     }
 
     CompatData expected;
-    expected.Init();
+    expected.InitExpected();
     if ( !data.Equals( expected ) )
     {
         fprintf( stderr, "compat cpp read: decoded values do not match\n" );
