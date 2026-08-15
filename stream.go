@@ -107,15 +107,19 @@ type Stream interface {
 	// serialized in [0,bufferSize-1], the stream aligns to a byte boundary, then the
 	// string bytes are block copied. bufferSize mirrors the C++ API, where a string with
 	// its terminating null character must fit into the buffer, keeping streams
-	// compatible between the two languages.
+	// compatible between the two languages. The payload is well-formed UTF-8 with no
+	// interior NUL: the writer's contract (STANDARD.md string), and enforced on read —
+	// a read of a violating payload fails with ErrValueOutOfRange. Arbitrary byte
+	// payloads belong to SerializeBytes.
 	SerializeString(value *string, bufferSize int) error
 
 	// SerializeWideString serializes a string as 32 bits per UTF-16 code unit, wire
 	// compatible with serialize_wstring in the C++ library: astral code points are
 	// split into surrogate pairs on write and recombined on read, so every platform
 	// produces identical bytes (STANDARD.md). The length is serialized in
-	// [0,bufferSize-1] code units. On read, groups that are not UTF-16 code units
-	// (values above 0xFFFF) and unpaired surrogates fail with ErrValueOutOfRange.
+	// [0,bufferSize-1] code units. The payload is well-formed UTF-16 with no interior
+	// NUL, enforced on read: groups that are not UTF-16 code units (values above
+	// 0xFFFF), unpaired surrogates, and zero groups fail with ErrValueOutOfRange.
 	SerializeWideString(value *string, bufferSize int) error
 
 	// SerializeAlign pads the stream with zero bits to the next byte boundary. On read

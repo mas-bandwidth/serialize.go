@@ -3,7 +3,9 @@ package serialize
 import (
 	"bytes"
 	"math"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzReadStream feeds arbitrary bytes to a read stream and exercises every serialize
@@ -116,8 +118,20 @@ func FuzzRoundTrip(f *testing.F) {
 			}
 		}
 
+		// the round trip serializes str with SerializeString, whose payload is
+		// well-formed UTF-8 without interior NUL — the writer's contract, and since
+		// the reader-validation ruling refused on read. The fuzzer explores arbitrary
+		// bytes, so canonicalize to a conforming payload here: contract-violating
+		// writes are undefined by STANDARD.md and arbitrary bytes belong to
+		// SerializeBytes, which this harness fuzzes via bulk.
+		str = strings.ToValidUTF8(str, "�")
+		str = strings.ReplaceAll(str, "\x00", "")
 		if len(str) > 255 {
-			str = str[:255]
+			cut := 255
+			for cut > 0 && !utf8.RuneStart(str[cut]) {
+				cut-- // don't split a multibyte rune at the truncation point
+			}
+			str = str[:cut]
 		}
 		if len(bulk) > 512 {
 			bulk = bulk[:512]
