@@ -319,7 +319,11 @@ func fixedPointParams64(integerBits, fractionBits int, min, max int64) (rawMin, 
 // storage: integerBits plus fractionBits must equal 128. The raw offset math runs in
 // the unsigned 128 bit domain, and the bit count is the bit length of the whole unit
 // range plus fractionBits — shifting the range left by fractionBits adds exactly that
-// many bits to its length.
+// many bits to its length — except when the range is DEGENERATE. A degenerate range
+// (min == max) costs zero bits on every storage width, per STANDARD.md: adding
+// fractionBits to the zero-wide unit range would emit fractionBits of zeros here
+// while fixedPointParams64 writes nothing, the exact 64/128 self-disagreement
+// serialize#54 pins on this port.
 func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin, rawRange Uint128, numBits int) {
 	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits != 128 || min > max {
 		panic(panicFixedParams)
@@ -331,6 +335,10 @@ func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin,
 	rawMin = Int128From64(min).Uint128().Lsh(uint(fractionBits))
 	rawMax := Int128From64(max).Uint128().Lsh(uint(fractionBits))
 	rawRange = rawMax.Sub(rawMin)
-	numBits = BitsRequired64(uint64(min), uint64(max)) + fractionBits
+	if min == max {
+		numBits = 0
+	} else {
+		numBits = BitsRequired64(uint64(min), uint64(max)) + fractionBits
+	}
 	return rawMin, rawRange, numBits
 }
