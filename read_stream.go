@@ -1,6 +1,9 @@
 package serialize
 
-import "math"
+import (
+	"math"
+	"unicode/utf16"
+)
 
 // ReadStream reads bitpacked data from a buffer. It wraps BitReader with bounds and
 // range checking on every read, so maliciously crafted packets fail with errors instead
@@ -413,9 +416,13 @@ func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
 	return nil
 }
 
-// SerializeWideString reads a string stored as 32 bits per code point into *value.
-// Code points that are not valid (surrogates or values above 0x10FFFF) fail with
-// ErrValueOutOfRange. On failure *value is left unmodified.
+// SerializeWideString reads a string stored as 32 bits per UTF-16 code unit into
+// *value, recombining surrogate pairs into the astral code points they encode
+// (STANDARD.md: each group carries one UTF-16 code unit, so every platform produces
+// identical bytes). Groups a Go string cannot hold fail with ErrValueOutOfRange
+// rather than truncating: values above 0xFFFF are not UTF-16 code units, and an
+// unpaired surrogate — a writer contract violation on the wire — has no UTF-8
+// representation. On failure *value is left unmodified.
 func (s *ReadStream) SerializeWideString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
 	if s.err != nil {
@@ -429,13 +436,27 @@ func (s *ReadStream) SerializeWideString(value *string, bufferSize int) error {
 	if int64(length)*32 > s.reader.BitsRemaining() {
 		return s.fail(ErrOverflow)
 	}
-	runes := make([]rune, length)
-	for i := range runes {
-		codePoint := s.reader.readBits(32)
-		if codePoint > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+	runes := make([]rune, 0, length)
+	for i := int32(0); i < length; i++ {
+		unit := s.reader.readBits(32)
+		if unit > 0xFFFF || (unit >= 0xDC00 && unit <= 0xDFFF) {
+			// not a UTF-16 code unit, or a low surrogate with no high surrogate before it
 			return s.fail(ErrValueOutOfRange)
 		}
-		runes[i] = rune(codePoint)
+		if unit >= 0xD800 && unit <= 0xDBFF {
+			// a high surrogate: the pair's low half must follow within the length
+			i++
+			if i == length {
+				return s.fail(ErrValueOutOfRange)
+			}
+			low := s.reader.readBits(32)
+			if low < 0xDC00 || low > 0xDFFF {
+				return s.fail(ErrValueOutOfRange)
+			}
+			runes = append(runes, utf16.DecodeRune(rune(unit), rune(low)))
+			continue
+		}
+		runes = append(runes, rune(unit))
 	}
 	*value = string(runes)
 	return nil

@@ -3,7 +3,7 @@ package serialize
 import (
 	"encoding/binary"
 	"math"
-	"unicode/utf8"
+	"unicode/utf16"
 )
 
 // WriteStream writes bitpacked data to a buffer. It carries the bit writer state in
@@ -432,16 +432,21 @@ func (s *WriteStream) SerializeString(value *string, bufferSize int) error {
 	return nil
 }
 
-// SerializeWideString writes the length of *value in code points in [0,bufferSize-1],
-// then each code point as 32 bits. Wire compatible with serialize_wstring in the C++
-// library. Returns ErrValueOutOfRange if the string does not fit in bufferSize-1 code
-// points.
+// SerializeWideString writes the length of *value in UTF-16 code units in
+// [0,bufferSize-1], then each code unit as 32 bits. Wire compatible with
+// serialize_wstring in the C++ library: STANDARD.md pins each 32 bit group as one
+// UTF-16 code unit, so astral code points are split into surrogate pairs — two
+// groups — and every platform produces identical bytes. The payload is well formed
+// by construction: ranging over a Go string can only yield valid code points
+// (invalid UTF-8 decodes as U+FFFD, the writer contract surfacing Go's way), never
+// an unpaired surrogate. Returns ErrValueOutOfRange if the string does not fit in
+// bufferSize-1 code units.
 func (s *WriteStream) SerializeWideString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
 	if s.err != nil {
 		return s.err
 	}
-	length := int32(utf8.RuneCountInString(*value))
+	length := int32(utf16Length(*value))
 	if length >= int32(bufferSize) {
 		return s.fail(ErrValueOutOfRange)
 	}
@@ -449,6 +454,16 @@ func (s *WriteStream) SerializeWideString(value *string, bufferSize int) error {
 		return err
 	}
 	for _, r := range *value {
+		if r >= 0x10000 {
+			hi, lo := utf16.EncodeRune(r)
+			if err := s.writeBits(uint32(hi), 32); err != nil {
+				return err
+			}
+			if err := s.writeBits(uint32(lo), 32); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := s.writeBits(uint32(r), 32); err != nil {
 			return err
 		}

@@ -110,10 +110,12 @@ type Stream interface {
 	// compatible between the two languages.
 	SerializeString(value *string, bufferSize int) error
 
-	// SerializeWideString serializes a string as 32 bits per code point, wire compatible
-	// with serialize_wstring in the C++ library. The length is serialized in
-	// [0,bufferSize-1] code points. On read, code points that are not valid (surrogates
-	// or values above 0x10FFFF) fail with ErrValueOutOfRange.
+	// SerializeWideString serializes a string as 32 bits per UTF-16 code unit, wire
+	// compatible with serialize_wstring in the C++ library: astral code points are
+	// split into surrogate pairs on write and recombined on read, so every platform
+	// produces identical bytes (STANDARD.md). The length is serialized in
+	// [0,bufferSize-1] code units. On read, groups that are not UTF-16 code units
+	// (values above 0xFFFF) and unpaired surrogates fail with ErrValueOutOfRange.
 	SerializeWideString(value *string, bufferSize int) error
 
 	// SerializeAlign pads the stream with zero bits to the next byte boundary. On read
@@ -269,6 +271,21 @@ func validateBufferSize(bufferSize int) {
 	if bufferSize < 2 || int64(bufferSize) > math.MaxInt32 {
 		panic(panicBufferSize)
 	}
+}
+
+// utf16Length returns the number of UTF-16 code units needed to encode the string:
+// one per basic-plane code point, two (a surrogate pair) per astral code point. This
+// is the wstring wire length — STANDARD.md pins each 32 bit group as one UTF-16 code
+// unit — and it matches wcslen on a 2 byte wchar_t platform. No allocation.
+func utf16Length(value string) int {
+	length := 0
+	for _, r := range value {
+		length++
+		if r >= 0x10000 {
+			length++ // astral code points split into a surrogate pair on the wire
+		}
+	}
+	return length
 }
 
 // fixedPointCapacity returns the whole unit bounds a Q format with the given number
