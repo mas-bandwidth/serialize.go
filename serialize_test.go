@@ -1392,6 +1392,75 @@ func TestSerializeWideStringUTF16Wire(t *testing.T) {
 	}
 }
 
+// TestSerializeWideStringFamilyPin is the cross-family conformance vector: U+1F600
+// then U+0041 through an 8 unit buffer. serialize pins it in
+// test_wstring_utf16_code_units and serialize.c in test/roundtrip.c — every port
+// must produce these exact bytes. The pin is spelled three ways and all three must
+// agree: the literal bytes, the wire built from raw bit operations (a 3 bit [0,7]
+// length field carrying 3, then one 32 bit group per code unit), and the wstring
+// path itself. Go strings hold code points, so the local value is "\U0001F600A"
+// and the write path splits the astral code point into the surrogate pair
+// 0xD83D 0xDE00 — the same bytes a 2 byte wchar_t platform produces from the pair
+// it already holds.
+func TestSerializeWideStringFamilyPin(t *testing.T) {
+	// the family's pinned bytes: length 3 in a 3 bit field, then 0xD83D, 0xDE00,
+	// 0x0041 as 32 bit groups — 99 bits, 13 bytes
+	pinnedBytes := []byte{
+		0xEB, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06, 0x00, 0x08, 0x02, 0x00, 0x00, 0x00,
+	}
+
+	// the wire spelled out with raw bit operations must reproduce the literal
+	rawStream := NewWriteStream(make([]byte, 64))
+	length := int32(3)
+	rawStream.SerializeInt(&length, 0, 7)
+	for _, group := range []uint32{0xD83D, 0xDE00, 0x0041} {
+		g := group
+		rawStream.SerializeBits(&g, 32)
+	}
+	rawStream.Flush()
+	if err := rawStream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(rawStream.Data(), pinnedBytes) {
+		t.Fatalf("raw bit operations disagree with the pinned bytes:\nexpected %x\ngot      %x", pinnedBytes, rawStream.Data())
+	}
+
+	// write side: the wstring path must produce exactly the pinned bytes
+	writeStream := NewWriteStream(make([]byte, 64))
+	v := "\U0001F600A" // one astral code point + one basic-plane: three code units
+	if err := writeStream.SerializeWideString(&v, 8); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+	if got := writeStream.BitsProcessed(); got != 3+3*32 {
+		t.Fatalf("expected %d bits (3 bit length prefix + three 32 bit groups), got %d", 3+3*32, got)
+	}
+	if !bytes.Equal(writeStream.Data(), pinnedBytes) {
+		t.Fatalf("wstring path disagrees with the pinned bytes:\nexpected %x\ngot      %x", pinnedBytes, writeStream.Data())
+	}
+
+	// the measure stream agrees with the write stream on the unit count
+	measureStream := NewMeasureStream()
+	m := "\U0001F600A"
+	if err := measureStream.SerializeWideString(&m, 8); err != nil {
+		t.Fatal(err)
+	}
+	if measureStream.BitsProcessed() != writeStream.BitsProcessed() {
+		t.Fatalf("measure disagrees with write: %d vs %d bits", measureStream.BitsProcessed(), writeStream.BitsProcessed())
+	}
+
+	// read side: the pinned bytes decode back to the local representation — the
+	// surrogate pair recombines, because Go strings hold code points
+	readStream := NewReadStream(pinnedBytes)
+	var value string
+	if err := readStream.SerializeWideString(&value, 8); err != nil {
+		t.Fatal(err)
+	}
+	if value != "\U0001F600A" {
+		t.Fatalf("expected %q, got %q", "\U0001F600A", value)
+	}
+}
+
 // TestReaderContentValidation pins the reader-validation ruling (2026-08-15): the
 // well-formedness rules under string and wstring bind the READ side, because readers
 // face untrusted bytes and refusal rules are format. Four doctored streams, one per
