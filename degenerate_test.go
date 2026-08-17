@@ -1,6 +1,9 @@
 package serialize
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // STANDARD.md: a degenerate range where min == max costs ZERO BITS -- the value
 // is known from the range alone and nothing is written.
@@ -274,7 +277,7 @@ func TestDegenerateStringBufferSize(t *testing.T) {
 		// a non-empty string still cannot fit: the writer's normal rejection
 		w2 := NewWriteStream(make([]byte, 64))
 		nonEmpty := "x"
-		if err := w2.SerializeString(&nonEmpty, 1); err != ErrValueOutOfRange {
+		if err := w2.SerializeString(&nonEmpty, 1); !errors.Is(err, ErrValueOutOfRange) {
 			t.Errorf("non-empty string at bufferSize 1: got %v, want ErrValueOutOfRange", err)
 		}
 	})
@@ -303,7 +306,7 @@ func TestDegenerateStringBufferSize(t *testing.T) {
 
 		w2 := NewWriteStream(make([]byte, 64))
 		nonEmpty := "x"
-		if err := w2.SerializeWideString(&nonEmpty, 1); err != ErrValueOutOfRange {
+		if err := w2.SerializeWideString(&nonEmpty, 1); !errors.Is(err, ErrValueOutOfRange) {
 			t.Errorf("non-empty wstring at bufferSize 1: got %v, want ErrValueOutOfRange", err)
 		}
 	})
