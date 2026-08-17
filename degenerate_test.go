@@ -1,6 +1,9 @@
 package serialize
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // STANDARD.md: a degenerate range where min == max costs ZERO BITS -- the value
 // is known from the range alone and nothing is written.
@@ -220,4 +223,103 @@ func TestDegenerateRangeFixed128(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDegenerateStringBufferSize: bufferSize 1 is LEGAL — the degenerate string
+// buffer. The length range collapses to [0,0], so only the empty string travels and
+// the length field costs zero bits, exactly as the C++ library treats buffer_size 1
+// (serialize_int over a degenerate range). The old bufferSize >= 2 panic was this
+// port's invention — the 2026-08-16 six-language check-model audit, issue #35 — and
+// the same floor replicated into other ports from here.
+func TestDegenerateStringBufferSize(t *testing.T) {
+	t.Run("string", func(t *testing.T) {
+		buffer := make([]byte, 64)
+
+		w := NewWriteStream(buffer)
+		v := ""
+		after := int32(3)
+		if err := w.SerializeString(&v, 1); err != nil {
+			t.Fatalf("write empty string at bufferSize 1: %v", err)
+		}
+		if got := w.BitsProcessed(); got != 0 {
+			t.Errorf("empty string at bufferSize 1 wrote %d bits, want 0 (degenerate length, empty payload)", got)
+		}
+		if err := w.SerializeInt(&after, 0, 7); err != nil {
+			t.Fatalf("write after: %v", err)
+		}
+		w.Flush()
+
+		r := NewReadStream(buffer[:w.BytesProcessed()])
+		out := "poisoned"
+		var readAfter int32
+		if err := r.SerializeString(&out, 1); err != nil {
+			t.Fatalf("read empty string at bufferSize 1: %v", err)
+		}
+		if out != "" {
+			t.Errorf("read back %q, want the empty string", out)
+		}
+		if err := r.SerializeInt(&readAfter, 0, 7); err != nil {
+			t.Fatalf("read after: %v", err)
+		}
+		if readAfter != 3 {
+			t.Errorf("after read back %d, want 3", readAfter)
+		}
+
+		m := NewMeasureStream()
+		mv := ""
+		if err := m.SerializeString(&mv, 1); err != nil {
+			t.Fatalf("measure empty string at bufferSize 1: %v", err)
+		}
+		if got := m.BitsProcessed(); got > 7 {
+			t.Errorf("measure says %d bits, want at most the conservative align worst case 7", got)
+		}
+
+		// a non-empty string still cannot fit: the writer's normal rejection
+		w2 := NewWriteStream(make([]byte, 64))
+		nonEmpty := "x"
+		if err := w2.SerializeString(&nonEmpty, 1); !errors.Is(err, ErrValueOutOfRange) {
+			t.Errorf("non-empty string at bufferSize 1: got %v, want ErrValueOutOfRange", err)
+		}
+	})
+
+	t.Run("wstring", func(t *testing.T) {
+		buffer := make([]byte, 64)
+
+		w := NewWriteStream(buffer)
+		v := ""
+		if err := w.SerializeWideString(&v, 1); err != nil {
+			t.Fatalf("write empty wstring at bufferSize 1: %v", err)
+		}
+		if got := w.BitsProcessed(); got != 0 {
+			t.Errorf("empty wstring at bufferSize 1 wrote %d bits, want 0", got)
+		}
+		w.Flush()
+
+		r := NewReadStream(buffer[:8])
+		out := "poisoned"
+		if err := r.SerializeWideString(&out, 1); err != nil {
+			t.Fatalf("read empty wstring at bufferSize 1: %v", err)
+		}
+		if out != "" {
+			t.Errorf("read back %q, want the empty string", out)
+		}
+
+		w2 := NewWriteStream(make([]byte, 64))
+		nonEmpty := "x"
+		if err := w2.SerializeWideString(&nonEmpty, 1); !errors.Is(err, ErrValueOutOfRange) {
+			t.Errorf("non-empty wstring at bufferSize 1: got %v, want ErrValueOutOfRange", err)
+		}
+	})
+
+	// 0 stays misuse: it cannot express any length range
+	t.Run("zero still panics", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("bufferSize 0 must panic: no length range exists")
+			}
+		}()
+		w := NewWriteStream(make([]byte, 8))
+		v := ""
+		_ = w.SerializeString(&v, 0)
+	})
 }

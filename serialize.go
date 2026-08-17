@@ -69,7 +69,7 @@ const (
 	panicMinMax        = "serialize: min must not be greater than max"
 	panicFixedParams   = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
 	panicFixedBounds   = "serialize: fixed point bounds in whole units do not fit the Q format"
-	panicBufferSize    = "serialize: string buffer size must be in [2,1<<31)"
+	panicBufferSize    = "serialize: string buffer size must be in [1,1<<31)"
 	panicFloatParams   = "serialize: compressed float requires min < max and resolution > 0"
 	panicWriteOverflow = "serialize: bit writer overflow"
 	panicReadOverflow  = "serialize: bit reader would read past the end of the buffer"

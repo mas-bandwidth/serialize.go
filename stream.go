@@ -270,9 +270,14 @@ func compressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32
 	return maxIntegerValue, bits, delta
 }
 
-// validateBufferSize panics if a string buffer size cannot express a valid length range.
+// validateBufferSize panics if a string buffer size cannot express a valid length
+// range. The floor is 1: bufferSize 1 gives the degenerate length range [0,0] — only
+// the empty string travels, at zero length bits — exactly as the C++ library treats
+// buffer_size 1 (the old floor of 2 was this port's invention, removed per the
+// 2026-08-16 check-model audit, issue #35). The upper bound is the language boundary:
+// the wire's length field is a 32 bit int, and Go's int is wider.
 func validateBufferSize(bufferSize int) {
-	if bufferSize < 2 || int64(bufferSize) > math.MaxInt32 {
+	if bufferSize < 1 || int64(bufferSize) > math.MaxInt32 {
 		panic(panicBufferSize)
 	}
 }
