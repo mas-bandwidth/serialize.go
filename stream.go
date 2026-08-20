@@ -99,6 +99,15 @@ type Stream interface {
 	// if the call succeeds.
 	SerializeCompressedFloat32(value *float32, min, max, resolution float32) error
 
+	// SerializeCompressedFloat32Precomputed is deliberately NOT part of this
+	// interface. WriteStream, ReadStream and MeasureStream all carry it, so a
+	// concrete-typed serialize function — which is what generated code uses — reaches
+	// it directly, and a unified function that wants it can declare its own one method
+	// interface over the signature. Adding a method to a published Go interface breaks
+	// every outside implementer of it, which would make an additive change a major
+	// version event; the C++ reference pays no such cost because its stream parameter
+	// is a template, not an interface. See CompressedFloatParams.
+
 	// SerializeBytes serializes an array of bytes. The stream aligns to a byte boundary
 	// first, then block copies the data. Both sides must know the length: it is not sent.
 	SerializeBytes(data []byte) error
@@ -244,11 +253,28 @@ var intRelativeBuckets = [...]struct{ min, max uint32 }{
 	{4378, 69914},
 }
 
-// compressedFloatParams computes the quantization parameters shared by the write, read
-// and measure implementations of SerializeCompressedFloat32. The quantized range is
-// clamped so it always fits in a uint32, even for pathological delta / resolution
-// ratios; the !>= form of the clamp also catches NaN.
-func compressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32, bits int, delta float32) {
+// CompressedFloatParams derives the compressed float wire constants from a
+// (min,max,resolution) declaration. This is the derivation SerializeCompressedFloat32
+// performs on every call, exposed so it can be paid once instead: the constants depend
+// only on the declaration, never on the value, so a schema compiler runs the same
+// derivation at code generation time and passes the results to
+// SerializeCompressedFloat32Precomputed at every call site. SerializeCompressedFloat32
+// itself derives with exactly this function and forwards to exactly that entry point,
+// so the two entry points are wire identical by construction.
+//
+// maxIntegerValue is the quantization step count ceil((max-min)/resolution), clamped to
+// [1,4294967040]: values quantize to integers in [0,maxIntegerValue]. bits is the wire
+// width BitsRequired(0, maxIntegerValue), the number of bits a quantized value occupies
+// on the wire, in [1,32]. delta is the range width max - min, computed in float32: the
+// quantization arithmetic is pinned to float32 (STANDARD.md), so the wire depends on
+// this exact value, not on the real-number difference.
+//
+// The quantized range is clamped so it always fits in a uint32, even for pathological
+// delta / resolution ratios; the !>= form of the clamp also catches NaN. A declaration
+// with min >= max or resolution <= 0 is API misuse and panics; a declaration whose
+// delta, or delta / resolution, is not finite in float32 is non-conforming
+// (STANDARD.md) and has no wire meaning.
+func CompressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32, bits int, delta float32) {
 	if !(min < max) || !(resolution > 0) {
 		panic(panicFloatParams)
 	}
@@ -268,6 +294,19 @@ func compressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32
 	bits = BitsRequired(0, maxIntegerValue)
 
 	return maxIntegerValue, bits, delta
+}
+
+// validateCompressedFloatConstants panics unless the precomputed compressed float
+// constants are exactly what CompressedFloatParams derives for a conforming
+// declaration. Anything else is a caller bug — the field would not occupy the width
+// every other conforming implementation of the declaration expects — so it panics
+// like the debug asserts in the C++ library, per the writer-trusted model. The
+// delta-delta term catches a non-finite delta (Inf - Inf is NaN); !(delta > 0)
+// catches NaN, zero and negative deltas.
+func validateCompressedFloatConstants(maxIntegerValue uint32, bits int, delta float32) {
+	if maxIntegerValue == 0 || bits != BitsRequired(0, maxIntegerValue) || !(delta > 0) || delta-delta != 0 {
+		panic(panicPrecomputedFloat)
+	}
 }
 
 // validateBufferSize panics if a string buffer size cannot express a valid length

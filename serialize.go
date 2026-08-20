@@ -64,17 +64,18 @@ var (
 // Panic messages for API misuse. These indicate programmer error, never bad packet data,
 // so they panic like the debug asserts in the C++ library rather than returning an error.
 const (
-	panicBitsRange     = "serialize: bits must be in [1,32]"
-	panicBitsRange64   = "serialize: bits must be in [1,64]"
-	panicMinMax        = "serialize: min must not be greater than max"
-	panicFixedParams   = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
-	panicFixedBounds   = "serialize: fixed point bounds in whole units do not fit the Q format"
-	panicBufferSize    = "serialize: string buffer size must be in [1,1<<31)"
-	panicFloatParams   = "serialize: compressed float requires min < max and resolution > 0"
-	panicWriteOverflow = "serialize: bit writer overflow"
-	panicReadOverflow  = "serialize: bit reader would read past the end of the buffer"
-	panicNotAligned    = "serialize: byte array serialization requires byte alignment"
-	panicBufferBytes   = "serialize: bit writer buffer size must be a multiple of 8 bytes"
+	panicBitsRange        = "serialize: bits must be in [1,32]"
+	panicBitsRange64      = "serialize: bits must be in [1,64]"
+	panicMinMax           = "serialize: min must not be greater than max"
+	panicFixedParams      = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
+	panicFixedBounds      = "serialize: fixed point bounds in whole units do not fit the Q format"
+	panicBufferSize       = "serialize: string buffer size must be in [1,1<<31)"
+	panicFloatParams      = "serialize: compressed float requires min < max and resolution > 0"
+	panicPrecomputedFloat = "serialize: precomputed compressed float constants must be exactly what CompressedFloatParams derives"
+	panicWriteOverflow    = "serialize: bit writer overflow"
+	panicReadOverflow     = "serialize: bit reader would read past the end of the buffer"
+	panicNotAligned       = "serialize: byte array serialization requires byte alignment"
+	panicBufferBytes      = "serialize: bit writer buffer size must be a multiple of 8 bytes"
 )
 
 // BitsRequired returns the number of bits required to serialize an integer in range [min,max].

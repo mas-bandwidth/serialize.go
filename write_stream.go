@@ -336,10 +336,40 @@ func (s *WriteStream) SerializeFloat64(value *float64) error {
 }
 
 // SerializeCompressedFloat32 quantizes *value into [min,max] at the given resolution and
-// writes only the bits required for the quantized range. The value is clamped into
-// [min,max] before quantization; the !>= / !<= clamp form forces NaN into range too.
+// writes only the bits required for the quantized range. It derives the wire constants
+// with CompressedFloatParams, then runs the one audited home of the write-side
+// quantization arithmetic: the two functions are the pre-split body, split at the line
+// schema issue mas-bandwidth/schema#82 names — everything that depends only on the
+// declaration lives in CompressedFloatParams, everything that touches the value or the
+// wire lives in compressedFloat32Precomputed, statement for statement — the same home
+// SerializeCompressedFloat32Precomputed reaches.
+// TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
+// identity against a frozen copy of the original unsplit implementation.
 func (s *WriteStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
-	maxIntegerValue, bits, delta := compressedFloatParams(min, max, resolution)
+	maxIntegerValue, bits, delta := CompressedFloatParams(min, max, resolution)
+	// no validation on this path: the constants come straight out of
+	// CompressedFloatParams, so they are correct by construction. Only constants
+	// supplied by a caller can be wrong, and those enter through the exported
+	// precomputed entry point, which validates them there.
+	return s.compressedFloat32Precomputed(value, maxIntegerValue, bits, delta, min)
+}
+
+// SerializeCompressedFloat32Precomputed quantizes *value from precomputed wire
+// constants — see CompressedFloatParams and the Stream interface documentation.
+// Constants that are not exactly what CompressedFloatParams derives are API misuse
+// and panic. This is the untrusted-caller boundary; the arithmetic itself lives in
+// compressedFloat32Precomputed, which the derive-per-call path reaches too.
+func (s *WriteStream) SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
+	validateCompressedFloatConstants(maxIntegerValue, bits, delta)
+	return s.compressedFloat32Precomputed(value, maxIntegerValue, bits, delta, min)
+}
+
+// compressedFloat32Precomputed is the one audited home of the write-side compressed
+// float quantization arithmetic. Both entry points reach it: SerializeCompressedFloat32
+// after deriving the constants, SerializeCompressedFloat32Precomputed after validating
+// the caller's. The value is clamped into the declared range before quantization; the
+// !>= / !<= clamp form forces NaN into range too.
+func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
 	normalizedValue := (*value - min) / delta
 	if !(normalizedValue >= 0) {
 		normalizedValue = 0

@@ -350,10 +350,42 @@ func (s *ReadStream) SerializeFloat64(value *float64) error {
 }
 
 // SerializeCompressedFloat32 reads a quantized floating point value. On success *value
-// is guaranteed to be in [min,max]; quantized values smuggled into the bit headroom fail
-// with ErrValueOutOfRange.
+// is guaranteed to be in [min,max]. It derives the wire constants with
+// CompressedFloatParams, then runs the one audited home of the read-side quantization
+// arithmetic: the two functions are the pre-split body, split at the line schema issue
+// mas-bandwidth/schema#82 names — everything that depends only on the declaration
+// lives in CompressedFloatParams, everything that touches the value or the wire lives
+// in compressedFloat32Precomputed, statement for statement — the same home
+// SerializeCompressedFloat32Precomputed reaches.
+// TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
+// identity against a frozen copy of the original unsplit implementation.
 func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
-	maxIntegerValue, bits, delta := compressedFloatParams(min, max, resolution)
+	maxIntegerValue, bits, delta := CompressedFloatParams(min, max, resolution)
+	// no validation on this path: the constants come straight out of
+	// CompressedFloatParams, so they are correct by construction. Only constants
+	// supplied by a caller can be wrong, and those enter through the exported
+	// precomputed entry point, which validates them there.
+	return s.compressedFloat32Precomputed(value, maxIntegerValue, bits, delta, min)
+}
+
+// SerializeCompressedFloat32Precomputed reads a quantized floating point value from
+// precomputed wire constants — see CompressedFloatParams and the Stream interface
+// documentation. Constants that are not exactly what CompressedFloatParams derives
+// are API misuse and panic. This is the untrusted-caller boundary; the arithmetic
+// itself lives in compressedFloat32Precomputed, which the derive-per-call path
+// reaches too.
+func (s *ReadStream) SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
+	validateCompressedFloatConstants(maxIntegerValue, bits, delta)
+	return s.compressedFloat32Precomputed(value, maxIntegerValue, bits, delta, min)
+}
+
+// compressedFloat32Precomputed is the one audited home of the read-side compressed
+// float quantization arithmetic. Both entry points reach it: SerializeCompressedFloat32
+// after deriving the constants, SerializeCompressedFloat32Precomputed after validating
+// the caller's. Quantized values smuggled into the bit headroom fail with
+// ErrValueOutOfRange — that is packet data, not API misuse, so it is an error and
+// never a panic.
+func (s *ReadStream) compressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
 	var integerValue uint32
 	if err := s.readBits(&integerValue, bits); err != nil {
 		return err
