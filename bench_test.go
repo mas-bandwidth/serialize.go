@@ -460,3 +460,95 @@ func BenchmarkReadStreamStringChanging(b *testing.B) {
 	}
 	benchSink += uint32(len(value))
 }
+
+// The compressed float benchmarks isolate one field so the derive-per-call and
+// precomputed entry points can be compared directly: the difference IS the per-call
+// derivation (a divide, a clamp, a ceil and a BitsRequired). This is the measurement
+// schema issue mas-bandwidth/schema#82 names for emitter adoption — the #79 inline
+// fold versus a call into the runtime is a measurement per backend, and these numbers
+// are the runtime side of it. The declaration is [-100,100] at resolution 0.01: the
+// non-zero-min conformance declaration, whose constants are 20000, 15, 200.0.
+
+func BenchmarkWriteStreamCompressedFloat(b *testing.B) {
+	buffer := make([]byte, 8)
+	stream := NewWriteStream(buffer)
+	value := float32(37.5)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := stream.SerializeCompressedFloat32(&value, -100, 100, 0.01); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+func BenchmarkWriteStreamCompressedFloatPrecomputed(b *testing.B) {
+	buffer := make([]byte, 8)
+	stream := NewWriteStream(buffer)
+	value := float32(37.5)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := stream.SerializeCompressedFloat32Precomputed(&value, 20000, 15, 200.0, -100.0); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+func BenchmarkReadStreamCompressedFloat(b *testing.B) {
+	buffer := make([]byte, 8)
+	writeStream := NewWriteStream(buffer)
+	written := float32(37.5)
+	if err := writeStream.SerializeCompressedFloat32(&written, -100, 100, 0.01); err != nil {
+		b.Fatal(err)
+	}
+	writeStream.Flush()
+	packet := writeStream.Data()
+
+	stream := NewReadStream(packet)
+	var value float32
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(packet)
+		if err := stream.SerializeCompressedFloat32(&value, -100, 100, 0.01); err != nil {
+			b.Fatal(err)
+		}
+	}
+	benchSink += uint32(value)
+}
+
+func BenchmarkReadStreamCompressedFloatPrecomputed(b *testing.B) {
+	buffer := make([]byte, 8)
+	writeStream := NewWriteStream(buffer)
+	written := float32(37.5)
+	if err := writeStream.SerializeCompressedFloat32Precomputed(&written, 20000, 15, 200.0, -100.0); err != nil {
+		b.Fatal(err)
+	}
+	writeStream.Flush()
+	packet := writeStream.Data()
+
+	stream := NewReadStream(packet)
+	var value float32
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(packet)
+		if err := stream.SerializeCompressedFloat32Precomputed(&value, 20000, 15, 200.0, -100.0); err != nil {
+			b.Fatal(err)
+		}
+	}
+	benchSink += uint32(value)
+}

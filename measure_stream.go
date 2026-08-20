@@ -164,9 +164,23 @@ func (s *MeasureStream) SerializeFloat32(value *float32) error { return s.measur
 // SerializeFloat64 measures 64 bits.
 func (s *MeasureStream) SerializeFloat64(value *float64) error { return s.measure(64) }
 
-// SerializeCompressedFloat32 measures the bits required for the quantized range.
+// SerializeCompressedFloat32 measures the bits required for the quantized range. It
+// derives the wire constants with CompressedFloatParams, exactly like the write and
+// read streams; the wire width is the whole of the measure-side arithmetic, so there
+// is no separate audited home to reach here.
 func (s *MeasureStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
-	_, bits, _ := compressedFloatParams(min, max, resolution)
+	// no validation on this path, exactly as on the write and read streams: the
+	// constants come straight out of CompressedFloatParams and are correct by
+	// construction
+	_, bits, _ := CompressedFloatParams(min, max, resolution)
+	return s.measure(int64(bits))
+}
+
+// SerializeCompressedFloat32Precomputed measures the precomputed wire width. The
+// constants are validated exactly as on the write and read streams: constants that are
+// not what CompressedFloatParams derives are API misuse and panic.
+func (s *MeasureStream) SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
+	validateCompressedFloatConstants(maxIntegerValue, bits, delta)
 	return s.measure(int64(bits))
 }
 
