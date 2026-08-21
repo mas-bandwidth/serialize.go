@@ -150,6 +150,12 @@ var compressedFloatShapes = []compressedFloatShape{
 	{0.0, 15.0, 1.0, 15, 4},                   // step count exactly fills the wire width: no headroom to refuse
 	{0.0, 1000000.0, 1.0, 1000000, 20},        // a million steps
 	{0.0, 10000000000.0, 1.0, 4294967040, 32}, // values clamps down to the largest float below 2^32
+	// shapes that discriminate the rounding rule itself: a fractional step count BELOW the
+	// half step, where ceil and round disagree. Every row above lands on an integer or within
+	// half a step of one, so all of them derive the same constants under either rule -- the
+	// corpus could not see a swap (mas-bandwidth/schema#108).
+	{0.0, 10.0, 0.3, 34, 6}, // 33.333332 steps: ceil 34, round 33 -- same width, different step count
+	{0.0, 63.3, 1.0, 64, 7}, // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits) -- straddles a power of two, so the WIRE WIDTH moves
 }
 
 // TestCompressedFloatParams pins the derived constants for the whole declaration
@@ -763,7 +769,7 @@ func (d *differential) runShape(shape *compressedFloatShape, sweepSteps, lcgRoun
 // density): confirm the change is to the corpus and not to the wire, then update this
 // constant to the value the failure reports. Never re-pin to make a red test green
 // without establishing which of the two moved.
-const corpusDigest = "cc4bd3132f572bd0530e8fee5082715b28d0f2a9a81b64f201a8ba496131118b"
+const corpusDigest = "6b4f4b19200eeda13ab8e307c7dcb42ba2164f890c34ba060c6991d3a5c09b1d"
 
 func TestCompressedFloatPrecomputedDifferential(t *testing.T) {
 	// the reference's sweep density and the exhaustive read side through 16-bit
