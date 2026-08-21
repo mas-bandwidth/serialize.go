@@ -9,7 +9,11 @@ package serialize
 // precomputed entry point, and the exact arithmetic shape the schema Go emitter inlines.
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"hash"
 	"math"
 	"testing"
 )
@@ -407,6 +411,13 @@ type differential struct {
 	t     *testing.T
 	count uint64
 
+	// digest absorbs every wire byte and every decoded bit pattern the sweep
+	// produces, so the corpus is an ABSOLUTE pin and not only a relative one.
+	// See TestCompressedFloatPrecomputedDifferential for why that distinction is
+	// the whole point.
+	digest hash.Hash
+	scalar [8]byte
+
 	shape           *compressedFloatShape
 	maxIntegerValue uint32
 	bits            int
@@ -415,6 +426,15 @@ type differential struct {
 	phase string
 	value float32
 	code  uint32
+}
+
+// absorb feeds one observed quantity into the corpus digest. Everything the
+// differential compares between implementations is also absorbed here, so a change
+// that moves the wire anywhere in the sweep changes the digest even when every
+// implementation moves together and all the relative checks stay green.
+func (d *differential) absorb(value uint64) {
+	binary.LittleEndian.PutUint64(d.scalar[:], value)
+	d.digest.Write(d.scalar[:])
 }
 
 func (d *differential) check(condition bool) {
@@ -500,6 +520,16 @@ func (d *differential) checkValue(value float32) {
 	d.check(math.Float32bits(decodedFrozen) == math.Float32bits(decodedLegacy))
 	d.check(math.Float32bits(decodedFrozen) == math.Float32bits(decodedPrecomputed))
 	d.check(math.Float32bits(decodedFrozen) == math.Float32bits(decodedFold))
+
+	// absolute anchor: the input, the measured width, the wire it produced and the
+	// value it decoded back to. The four legs have just been asserted identical, so
+	// absorbing the frozen leg absorbs all of them.
+	d.absorb(uint64(math.Float32bits(value)))
+	d.absorb(uint64(measureFrozen.BitsProcessed()))
+	for _, b := range bufferFrozen {
+		d.absorb(uint64(b))
+	}
+	d.absorb(uint64(math.Float32bits(decodedFrozen)))
 }
 
 // checkCode runs one wire integer through all four read paths: acceptance must agree
@@ -537,6 +567,16 @@ func (d *differential) checkCode(code uint32) {
 	d.check((errPrecomputed == nil) == accepted)
 	d.check((errFold == nil) == accepted)
 
+	// absolute anchor: the code, whether it was accepted, and what it decoded to
+	d.absorb(uint64(code))
+	d.absorb(uint64(d.bits))
+	if accepted {
+		d.absorb(1)
+		d.absorb(uint64(math.Float32bits(decodedFrozen)))
+	} else {
+		d.absorb(0)
+	}
+
 	if accepted {
 		d.check(math.Float32bits(decodedFrozen) == math.Float32bits(decodedLegacy))
 		d.check(math.Float32bits(decodedFrozen) == math.Float32bits(decodedPrecomputed))
@@ -566,6 +606,14 @@ func (d *differential) runShape(shape *compressedFloatShape, sweepSteps, lcgRoun
 	d.check(maxIntegerValue == shape.expectedMaxIntegerValue)
 	d.check(bits == shape.expectedBits)
 	d.check(delta == shape.max-shape.min)
+
+	// absolute anchor: the declaration and the constants derived from it
+	d.absorb(uint64(math.Float32bits(shape.min)))
+	d.absorb(uint64(math.Float32bits(shape.max)))
+	d.absorb(uint64(math.Float32bits(shape.res)))
+	d.absorb(uint64(maxIntegerValue))
+	d.absorb(uint64(bits))
+	d.absorb(uint64(math.Float32bits(delta)))
 
 	dmin := float64(shape.min)
 	ddelta := float64(delta)
@@ -687,6 +735,36 @@ func (d *differential) runShape(shape *compressedFloatShape, sweepSteps, lcgRoun
 	}
 }
 
+// corpusDigest is the SHA-256 of the whole differential corpus: for every declaration
+// its derived constants, and for every swept value and every wire code the measured
+// width, the emitted wire bytes and the decoded bit pattern. It is a GOLDEN value —
+// the wire this library produces for nine million inputs, in one constant.
+//
+// It exists because a differential is a RELATIVE instrument and cannot see a change
+// applied uniformly to everything it compares. Removing the load-bearing float32()
+// conversion from the audited home alone fails this test at check 2,091,027; removing
+// it from the audited home AND the frozen leg AND the fold leg together passes all
+// 9,350,235 checks on arm64 while the wire silently changes — the two roundings
+// STANDARD.md requires become one, and 0.005 over [0,10] at 0.01 starts writing 0
+// instead of 1. That is the Go form of the trap the C++ reference leg found at
+// -ffp-contract=fast (mas-bandwidth/schema#82): a differential can be green while the
+// arithmetic is wrong. The digest closes it — being an absolute value rather than a
+// comparison, it moves the moment the wire moves, however many legs moved with it.
+//
+// It is also a cross-architecture wire pin. The wire format is frozen and identical on
+// every target (invariant 1), so this constant must be the same on arm64, amd64, 386,
+// s390x and wasm; the CI cross job runs the suite under GOARCH=386, and a target whose
+// float arithmetic diverged would fail here rather than in production. arm64 is the
+// architecture that matters most: gc contracts float multiply-add into FMA there and
+// not on amd64, so the identical falsification above passes every test in this repo
+// when built for amd64.
+//
+// To re-pin after a DELIBERATE corpus change (a new declaration, a different sweep
+// density): confirm the change is to the corpus and not to the wire, then update this
+// constant to the value the failure reports. Never re-pin to make a red test green
+// without establishing which of the two moved.
+const corpusDigest = "cc4bd3132f572bd0530e8fee5082715b28d0f2a9a81b64f201a8ba496131118b"
+
 func TestCompressedFloatPrecomputedDifferential(t *testing.T) {
 	// the reference's sweep density and the exhaustive read side through 16-bit
 	// widths, in every mode: the whole corpus runs in about two seconds even under
@@ -699,7 +777,7 @@ func TestCompressedFloatPrecomputedDifferential(t *testing.T) {
 
 	lcg := uint64(0xC0FFEE1234567890) // fixed seed: failures reproduce
 
-	d := &differential{t: t}
+	d := &differential{t: t, digest: sha256.New()}
 	for i := range compressedFloatShapes {
 		d.runShape(&compressedFloatShapes[i], sweepSteps, lcgRounds, exhaustiveReadBits, &lcg)
 	}
@@ -710,5 +788,15 @@ func TestCompressedFloatPrecomputedDifferential(t *testing.T) {
 		t.Fatalf("differential ran %d checks, the floor is %d", d.count, minimumChecks)
 	}
 
-	t.Logf("%d checks, four implementations, %d declarations", d.count, len(compressedFloatShapes))
+	// the absolute anchor: the relative checks above prove the four implementations
+	// agree, and this proves what they agree ON has not moved
+	if got := hex.EncodeToString(d.digest.Sum(nil)); got != corpusDigest {
+		t.Fatalf("compressed float corpus digest is %s, want %s\n"+
+			"the four implementations still agree with each other, so this is a change to the WIRE, "+
+			"not to one implementation: every conforming runtime in the family disagrees with this build. "+
+			"See the corpusDigest doc comment before re-pinning.", got, corpusDigest)
+	}
+
+	t.Logf("%d checks, four implementations, %d declarations, corpus digest %s",
+		d.count, len(compressedFloatShapes), corpusDigest)
 }
