@@ -4,23 +4,36 @@
     PR: each side writes its stream to a file, the two files must be byte identical,
     and each side must read the other's file back to the exact values.
 
-    Download serialize.h (v1.7.0) from github.com/mas-bandwidth/serialize into this
+    Download serialize.h (v1.11.0) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.7.0/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.11.0/serialize.h
         c++ -O2 -std=c++17 -Wall -o compat compat.cpp
         ./compat write cpp.bin && ./compat read cpp.bin
 
-    The pin is v1.7.0 because that is the C++ release whose writer forces the
-    intermediate rounding in compressed_float. The harness now carries a vector
-    chosen to catch a contracted (FMA) quantization, and against v1.6.2 the check
-    is circular on arm64: clang contracts v1.6.2's writer at -O2 exactly like a
-    broken Go writer, both halves write the same wrong byte, and the gate passes
-    buggy-against-buggy. The older requirement still holds too: the degenerate
-    range (min == max) must not abort, which every release since v1.6.2
-    guarantees. Build with asserts ON — they are the C++ half of "API misuse
-    panics", and stripping them with -DNDEBUG would hide the divergence this
-    harness exists to catch.
+    The pin is v1.11.0. It must be at least v1.7.0, the C++ release whose writer
+    forces the intermediate rounding in compressed_float: the harness carries a
+    vector chosen to catch a contracted (FMA) quantization, and against v1.6.2 the
+    check is circular on arm64 — clang contracts v1.6.2's writer at -O2 exactly
+    like a broken Go writer, both halves write the same wrong byte, and the gate
+    passes buggy-against-buggy. It must be at least v1.11.0 for the reason it now
+    sits there: v1.11.0 is the first release carrying
+    serialize_compressed_float_precomputed, and this harness drives it. The older
+    requirement still holds too: the degenerate range (min == max) must not abort,
+    which every release since v1.6.2 guarantees. Build with asserts ON — they are
+    the C++ half of "API misuse panics", and stripping them with -DNDEBUG would
+    hide the divergence this harness exists to catch, including the precomputed
+    entry point's own constants check.
+
+    The two entry points cross in OPPOSITE DIRECTIONS on purpose, and neither
+    crossing proves what the other does. compressedFloatHalf rides the PRECOMPUTED
+    entry point in Go against a DERIVE-PER-CALL C++ side; compressedFloatShift
+    rides the PRECOMPUTED entry point here against a DERIVE-PER-CALL Go side. So
+    each language's precomputed path is held to the other language's derived path,
+    which is the mix a migrating codebase actually runs, and a divergence in either
+    direction fails. Because the two entry points are wire identical by
+    construction, routing a field through the precomputed one changes no byte of
+    this harness's output — that unchanged output is the claim, measured.
 
     Any change to the value sequence must be mirrored in ../main.go, and never changes
     the wire format: see CLAUDE.md invariant 1.
@@ -118,7 +131,10 @@ struct CompatData
         serialize_float( stream, floatValue );
         serialize_compressed_float( stream, compressedFloatValue, 0.0f, 10.0f, 0.01f );
         serialize_compressed_float( stream, compressedFloatHalf, 0.0f, 10.0f, 0.01f );
-        serialize_compressed_float( stream, compressedFloatShift, -100.0f, 100.0f, 0.01f );
+        // constants are exactly serialize_compressed_float_params( -100, 100, 0.01 ):
+        // max_integer_value 20000, bits 15, delta 200 — verified against that function
+        // rather than hand-derived. Anything else is API misuse and trips the asserts.
+        serialize_compressed_float_precomputed( stream, compressedFloatShift, 20000, 15, 200.0f, -100.0f );
         serialize_double( stream, doubleValue );
         serialize_uint8( stream, uint8Value );
         serialize_uint16( stream, uint16Value );
