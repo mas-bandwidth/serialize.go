@@ -111,15 +111,19 @@ jobs:
         with:
           go-version: stable
           cache: false
-      # v1.7.0 is the C++ release whose compressed_float writer forces the
-      # intermediate rounding: the harness carries a vector chosen to catch a
-      # contracted (FMA) quantization, and on arm64 an older header contracts
-      # exactly like a broken writer would, letting the gate pass buggy against
-      # buggy. It also keeps the degenerate range (min == max) round trippable,
-      # which every release since v1.6.2 guarantees. Bump deliberately, and only
-      # alongside a byte-identity check.
+      # The pin has two floors. v1.7.0 is the C++ release whose compressed_float
+      # writer forces the intermediate rounding: the harness carries a vector chosen
+      # to catch a contracted (FMA) quantization, and on arm64 an older header
+      # contracts exactly like a broken writer would, letting the gate pass buggy
+      # against buggy. v1.11.0 is the first release carrying
+      # serialize_compressed_float_precomputed, which this harness now drives from
+      # the C++ side. It also keeps the degenerate range (min == max) round
+      # trippable, which every release since v1.6.2 guarantees. Bump deliberately,
+      # and only alongside a byte-identity check — this bump came with one
+      # (issue #40): the precomputed entry point is wire identical to the derived
+      # one by construction, so the harness output did not move a byte.
       - name: download the pinned C++ serialize.h
-        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.7.0/serialize.h
+        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.11.0/serialize.h
       # asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse panics",
       # and the degenerate range must pass with them enabled, not around them.
       - name: build the C++ harness
