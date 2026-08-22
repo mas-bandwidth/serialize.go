@@ -119,7 +119,15 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 	stream.SerializeBool(&data.flag)
 	stream.SerializeFloat32(&data.floatValue)
 	stream.SerializeCompressedFloat32(&data.compressedFloatValue, 0.0, 10.0, 0.01)
-	stream.SerializeCompressedFloat32(&data.compressedFloatHalf, 0.0, 10.0, 0.01)
+	// The FMA-boundary field rides the PRECOMPUTED entry point (schema #107): constants
+	// straight from CompressedFloatParams(0, 10, 0.01), so this harness now proves the
+	// precomputed path byte-identical across the language boundary -- against a C++ side
+	// still deriving per call, which is exactly the mix a migrating codebase runs. The
+	// one-method interface is the pattern the Stream interface's own doc prescribes for
+	// reaching the precomputed entry point through a unified serialize function.
+	stream.(interface {
+		SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error
+	}).SerializeCompressedFloat32Precomputed(&data.compressedFloatHalf, 1000, 10, 10.0, 0.0)
 	stream.SerializeCompressedFloat32(&data.compressedFloatShift, -100.0, 100.0, 0.01)
 	stream.SerializeFloat64(&data.doubleValue)
 	stream.SerializeUint8(&data.uint8Value)
