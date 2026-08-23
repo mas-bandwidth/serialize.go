@@ -461,6 +461,96 @@ func BenchmarkReadStreamStringChanging(b *testing.B) {
 	benchSink += uint32(len(value))
 }
 
+// BenchmarkWriteStreamString writes the same chat sized string every iteration — the
+// write half of the string rows above, which existed only for the read path until the
+// measure-first ruling (Glenn, 2026-08-17: "You can't improve what you don't measure")
+// asked for string and wstring rows across the family, before or with any string fix.
+// Wire: 6 bit length prefix + 2 align bits + 34 payload bytes = 35 bytes. This path is
+// allocation free.
+func BenchmarkWriteStreamString(b *testing.B) {
+	const message = "did you see that ludicrous display"
+	value := message
+	buffer := make([]byte, 64)
+	stream := NewWriteStream(buffer)
+
+	b.SetBytes(int64(len(message)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := stream.SerializeString(&value, 64); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+// wideMessage is the wstring rows' payload: the chat sized message plus one astral
+// code point, so the surrogate pair split/recombine path is exercised alongside the
+// BMP fast path (the family conformance pin uses U+1F600 for the same reason).
+// 37 UTF-16 code units; wire = 6 bit length prefix + 37 x 32 bits = 149 bytes —
+// SetBytes uses the UTF-8 payload length like the narrow string rows, so MB/s reads
+// as content throughput, not wire throughput.
+const wideMessage = "did you see that ludicrous display \U0001F600"
+
+// benchWriteWideString writes a single serialized wide string and returns the wire bytes.
+func benchWriteWideString(b *testing.B, v string) []byte {
+	b.Helper()
+	buffer := make([]byte, 256)
+	stream := NewWriteStream(buffer)
+	if err := stream.SerializeWideString(&v, 64); err != nil {
+		b.Fatal(err)
+	}
+	stream.Flush()
+	return stream.Data()
+}
+
+// BenchmarkWriteStreamWideString writes the wide message every iteration. The write
+// path iterates the string's runes and emits one 32 bit group per UTF-16 code unit —
+// allocation free.
+func BenchmarkWriteStreamWideString(b *testing.B) {
+	value := wideMessage
+	buffer := make([]byte, 256)
+	stream := NewWriteStream(buffer)
+
+	b.SetBytes(int64(len(wideMessage)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := stream.SerializeWideString(&value, 64); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+// BenchmarkReadStreamWideString reads the wide message into a reused value every
+// iteration. Unlike the narrow read path, which reuses the value when the bytes are
+// equal, the wide read path allocates every read today — a []rune scratch plus the
+// final string — and this row is what makes that cost a measured number rather than
+// a guess (the measure-first ruling: rows land before or with any wstring fix).
+func BenchmarkReadStreamWideString(b *testing.B) {
+	data := benchWriteWideString(b, wideMessage)
+
+	stream := NewReadStream(data)
+	var value string
+
+	b.SetBytes(int64(len(wideMessage)))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(data)
+		if err := stream.SerializeWideString(&value, 64); err != nil {
+			b.Fatal(err)
+		}
+	}
+	benchSink += uint32(len(value))
+}
+
 // The compressed float benchmarks isolate one field so the derive-per-call and
 // precomputed entry points can be compared directly: the difference IS the per-call
 // derivation (a divide, a clamp, a ceil and a BitsRequired). This is the measurement
