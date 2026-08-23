@@ -642,3 +642,164 @@ func BenchmarkReadStreamCompressedFloatPrecomputed(b *testing.B) {
 	}
 	benchSink += uint32(value)
 }
+
+// benchRealPacket is the local family's realistic snapshot row, the shape
+// BENCH-STANDARD §1.7 demands after the corpus composition ruling (Glenn,
+// 2026-08-16, verbatim): "we are profiling the REAL use case, which is, lots
+// and lots of individual serialize statements" / "maybe a real packet is like
+// 1000-2000 individually serialized bits" / "and very rarely is it wstring,
+// string or byte array".
+//
+// benchPacket above is 48.1% bulk by bits — its 64 byte payload is 512 of the
+// 1064 wire bits, so its MB/s is half memcpy. Per §1.7 rule 3 it is never
+// rebalanced in place (that would silently re-price every historical
+// comparison); this row joins beside it under a new name, inside the ruling's
+// latitude: hundreds of individually serialized small fields of assorted
+// scalar kinds, with one rare, small bulk payload.
+//
+// Bit arithmetic (§1.7 rule 4 — the bulk share is stated where the shape is
+// defined, and the write benchmark asserts the total so this comment cannot
+// go stale):
+//
+//	header:  64 (sequence) + 64 (serverTime) + 32 (ackBits)
+//	         + 11 (simRate Q8.8 in [0,4]: raw range 0..1024) + 4 (numEntities in [0,8])   = 175
+//	entity:  12 (id) + 3x18 (position) + 4x15 (orientation) + 3x10 (velocity)
+//	         + 10 (health) + 4 (weapon) + 3 (state in [0,5]) + 5 (flags) + 1 + 1 (bools)  = 180
+//	8 entities                                                                            = 1440
+//	individually serialized                                                    175 + 1440 = 1615
+//	align to byte boundary                                                                = 1
+//	bulk payload: 16 bytes                                                                = 128
+//	total                                                                     1744 bits   = 218 bytes
+//
+// Bulk share by bits: 128/1744 = 7.3% — under the 15% line, against
+// benchPacket's 48.1%. Individually serialized bits: 1615, inside the ruling's
+// 1000-2000 band.
+type benchRealPacket struct {
+	sequence    uint64
+	serverTime  float64
+	ackBits     uint32
+	simRate     int64 // Q8.8 fixed point, [0,4] whole units
+	numEntities int32
+	entities    [8]benchEntity
+	payload     [16]byte
+}
+
+type benchEntity struct {
+	id          uint32
+	position    [3]float32
+	orientation [4]float32
+	velocity    [3]float32
+	health      int32
+	weapon      uint32
+	state       int32
+	flags       uint32
+	moving      bool
+	firing      bool
+}
+
+func (p *benchRealPacket) init() {
+	p.sequence = 0xFEDCBA9876543210
+	p.serverTime = 1234.5678
+	p.ackBits = 0xAAAA5555
+	p.simRate = 1<<8 + 128 // 1.5 in Q8.8
+	p.numEntities = 8
+	for i := range p.entities {
+		e := &p.entities[i]
+		e.id = uint32(100 + i*7)
+		e.position = [3]float32{float32(i)*10.5 - 40, float32(i)*-3.25 + 12, float32(i) * 1.75}
+		e.orientation = [4]float32{0.1, -0.2, 0.3, 0.9}
+		e.velocity = [3]float32{float32(i) - 4, 2.5, float32(i) * 0.5}
+		e.health = 100 + int32(i)*100
+		e.weapon = uint32(i) & 15
+		e.state = int32(i) % 6
+		e.flags = uint32(i*5) & 31
+		e.moving = i%2 == 0
+		e.firing = i%3 == 0
+	}
+	for i := range p.payload {
+		p.payload[i] = byte(i * 59)
+	}
+}
+
+func (p *benchRealPacket) Serialize(stream Stream) error {
+	stream.SerializeUint64(&p.sequence)
+	stream.SerializeFloat64(&p.serverTime)
+	stream.SerializeBits(&p.ackBits, 32)
+	stream.SerializeFixed64(&p.simRate, 8, 8, 0, 4)
+	stream.SerializeInt(&p.numEntities, 0, 8)
+	for i := int32(0); i < p.numEntities; i++ {
+		e := &p.entities[i]
+		stream.SerializeBits(&e.id, 12)
+		for j := range e.position {
+			stream.SerializeCompressedFloat32(&e.position[j], -1024, 1024, 0.01)
+		}
+		for j := range e.orientation {
+			stream.SerializeCompressedFloat32(&e.orientation[j], -1, 1, 0.0001)
+		}
+		for j := range e.velocity {
+			stream.SerializeCompressedFloat32(&e.velocity[j], -64, 64, 0.25)
+		}
+		stream.SerializeInt(&e.health, 0, 1000)
+		stream.SerializeBits(&e.weapon, 4)
+		stream.SerializeInt(&e.state, 0, 5)
+		stream.SerializeBits(&e.flags, 5)
+		stream.SerializeBool(&e.moving)
+		stream.SerializeBool(&e.firing)
+	}
+	stream.SerializeBytes(p.payload[:])
+	return stream.Err()
+}
+
+func BenchmarkWriteStreamRealPacket(b *testing.B) {
+	buffer := make([]byte, 256)
+	packet := &benchRealPacket{}
+	packet.init()
+
+	stream := NewWriteStream(buffer)
+	if err := packet.Serialize(stream); err != nil {
+		b.Fatal(err)
+	}
+	stream.Flush()
+	if got := stream.BytesProcessed(); got != 218 {
+		b.Fatalf("real packet is %d wire bytes, want 218 — the definition comment's arithmetic is stale", got)
+	}
+
+	b.SetBytes(stream.BytesProcessed())
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		stream.Reset(buffer)
+		if err := packet.Serialize(stream); err != nil {
+			b.Fatal(err)
+		}
+		stream.Flush()
+	}
+}
+
+func BenchmarkReadStreamRealPacket(b *testing.B) {
+	buffer := make([]byte, 256)
+	packet := &benchRealPacket{}
+	packet.init()
+
+	writeStream := NewWriteStream(buffer)
+	if err := packet.Serialize(writeStream); err != nil {
+		b.Fatal(err)
+	}
+	writeStream.Flush()
+	data := writeStream.Data()
+
+	stream := NewReadStream(data)
+
+	b.SetBytes(writeStream.BytesProcessed())
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	readPacket := &benchRealPacket{}
+	for n := 0; n < b.N; n++ {
+		stream.Reset(data)
+		if err := readPacket.Serialize(stream); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
