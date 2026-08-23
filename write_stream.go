@@ -376,9 +376,6 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 	} else if !(normalizedValue <= 1) {
 		normalizedValue = 1
 	}
-	// the clamp bounds the integer value to [0, maxIntegerValue], so it is already
-	// masked to bits
-	//
 	// The inner float32() around the product is LOAD BEARING. STANDARD.md
 	// requires float32 arithmetic with TWO roundings — the product rounds
 	// before 0.5 is added — and Go permits fusing a multiply and an add into a
@@ -389,6 +386,16 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 	// agrees, so CI on x86 stays green while Apple Silicon emits different
 	// bytes. Do not "simplify" this.
 	integerValue := uint32(math.Floor(float64(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)))
+	// STANDARD.md: the integer clamp is normative (2026-08-23, schema#109; the C++
+	// reference merged it in mas-bandwidth/serialize#88). Once maxIntegerValue >= 2^23
+	// the float32 ulp at the top of the range reaches 1, so the rounded sum can exceed
+	// maxIntegerValue itself: the writer emits a code its own reader rejects, or one
+	// bit wider than the field. Clamping after the floor closes both and changes no
+	// byte for any declaration outside [2^23, 2^24). This clamp is also what bounds
+	// integerValue to [0, maxIntegerValue], so it reaches writeBits masked to bits.
+	if integerValue > maxIntegerValue {
+		integerValue = maxIntegerValue
+	}
 	return s.writeBits(integerValue, bits)
 }
 
