@@ -803,6 +803,83 @@ func TestCompressedFloatValidation(t *testing.T) {
 	}
 }
 
+// TestCompressedFloatTopOfRangeClamp mirrors the C++
+// test_compressed_float_top_of_range_clamp (mas-bandwidth/serialize#88):
+// STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn,
+// live). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5 lands on a tie and
+// round-to-even can push the quantized code past maxIntegerValue. Before the clamp,
+// witness A wrote a top-of-range code its own reader rejected, and witness B wrote
+// a code one bit wider than the field.
+func TestCompressedFloatTopOfRangeClamp(t *testing.T) {
+	// witness A: [0, 8388609] at resolution 1 -> maxIntegerValue 2^23+1, 24 bits.
+	// unclamped, writing max rounds to 8388610 and the reader rejects it.
+	{
+		buffer := make([]byte, 8)
+
+		writeStream := NewWriteStream(buffer)
+		written := float32(8388609.0)
+		if err := writeStream.SerializeCompressedFloat32(&written, 0, 8388609.0, 1.0); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+
+		readStream := NewReadStream(buffer)
+		var value float32
+		if err := readStream.SerializeCompressedFloat32(&value, 0, 8388609.0, 1.0); err != nil {
+			t.Fatal(err)
+		}
+		if value != 8388609.0 {
+			t.Fatalf("expected 8388609, got %f", value)
+		}
+	}
+
+	// witness B: [0, 16777215] at resolution 1 -> maxIntegerValue 2^24-1, 24 bits.
+	// unclamped, writing max rounds to 2^24 — one bit wider than the field.
+	{
+		buffer := make([]byte, 8)
+
+		writeStream := NewWriteStream(buffer)
+		written := float32(16777215.0)
+		if err := writeStream.SerializeCompressedFloat32(&written, 0, 16777215.0, 1.0); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+
+		readStream := NewReadStream(buffer)
+		var value float32
+		if err := readStream.SerializeCompressedFloat32(&value, 0, 16777215.0, 1.0); err != nil {
+			t.Fatal(err)
+		}
+		if value != 16777215.0 {
+			t.Fatalf("expected 16777215, got %f", value)
+		}
+	}
+
+	// both witnesses again through the precomputed entry point: this port's second
+	// writer entry point reaches the same audited home, so it must clamp too
+	for _, max := range []float32{8388609.0, 16777215.0} {
+		maxIntegerValue, bits, delta := CompressedFloatParams(0, max, 1.0)
+
+		buffer := make([]byte, 8)
+
+		writeStream := NewWriteStream(buffer)
+		written := max
+		if err := writeStream.SerializeCompressedFloat32Precomputed(&written, maxIntegerValue, bits, delta, 0); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+
+		readStream := NewReadStream(buffer)
+		var value float32
+		if err := readStream.SerializeCompressedFloat32Precomputed(&value, maxIntegerValue, bits, delta, 0); err != nil {
+			t.Fatal(err)
+		}
+		if value != max {
+			t.Fatalf("expected %f, got %f", max, value)
+		}
+	}
+}
+
 // Golden wire format test. The exact bytes produced by the serializer are pinned down
 // here and must never change. They are copied verbatim from the C++ serialize library
 // test suite, so this test also proves the Go implementation is wire compatible with

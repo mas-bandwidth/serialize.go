@@ -23,7 +23,11 @@ import (
 // pin the two roundings). FROZEN: never edit them. They are the code the audited home
 // replaced — the derivation as it lived in compressedFloatParams and the per-stream
 // bodies as they stood before the split — kept so the differential proves the split
-// changed nothing, forever. DO NOT EDIT.
+// changed nothing, forever. DO NOT EDIT — with one recorded exception: the normative
+// integer clamp of 2026-08-23 (schema#109) is applied to the frozen write below,
+// exactly as the C++ reference applied it to its own frozen copy in
+// mas-bandwidth/serialize#88. The clamp amends the wire format itself, so every leg
+// of the differential carries it; it is marked where it appears.
 
 func frozenCompressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32, bits int, delta float32) {
 	if !(min < max) || !(resolution > 0) {
@@ -56,6 +60,12 @@ func frozenCompressedFloatWrite(s *WriteStream, value *float32, min, max, resolu
 		normalizedValue = 1
 	}
 	integerValue := uint32(math.Floor(float64(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)))
+	// the normative integer clamp (STANDARD.md 2026-08-23, schema#109) — same clamp
+	// as the audited home, same reason; the C++ reference amended its frozen copy the
+	// same way in mas-bandwidth/serialize#88
+	if integerValue > maxIntegerValue {
+		integerValue = maxIntegerValue
+	}
 	return s.writeBits(integerValue, bits)
 }
 
@@ -98,6 +108,13 @@ func foldCompressedFloatWrite(s *WriteStream, value float32, maxIntegerValue uin
 		normalizedValue = 1
 	}
 	integerValue := uint32(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)
+	// the normative integer clamp (STANDARD.md 2026-08-23, schema#109): the emitter
+	// follows the runtime, so the emitted shape carries the clamp too. Before it,
+	// this leg's SerializeBits masked the too-wide code to zero where the audited
+	// home leaked it — the two writer families disagreed on the wire in [2^23, 2^24)
+	if integerValue > maxIntegerValue {
+		integerValue = maxIntegerValue
+	}
 	return s.SerializeBits(&integerValue, bits)
 }
 
@@ -156,6 +173,11 @@ var compressedFloatShapes = []compressedFloatShape{
 	// corpus could not see a swap (mas-bandwidth/schema#108).
 	{0.0, 10.0, 0.3, 34, 6}, // 33.333332 steps: ceil 34, round 33 -- same width, different step count
 	{0.0, 63.3, 1.0, 64, 7}, // 63.3 steps: ceil 64 (7 bits), round 63 (6 bits) -- straddles a power of two, so the WIRE WIDTH moves
+	// shapes in [2^23, 2^24), where the float32 ulp reaches 1 and the +0.5 rounding could
+	// push the code past maxIntegerValue before the normative clamp (2026-08-23,
+	// schema#109). The corpus was empty in this band, which is how the defect hid.
+	{0.0, 8388609.0, 1.0, 8388609, 24},   // 2^23+1: the reader-rejects witness
+	{0.0, 16777215.0, 1.0, 16777215, 24}, // 2^24-1: the wire-divergence witness
 }
 
 // TestCompressedFloatParams pins the derived constants for the whole declaration
@@ -769,7 +791,13 @@ func (d *differential) runShape(shape *compressedFloatShape, sweepSteps, lcgRoun
 // density): confirm the change is to the corpus and not to the wire, then update this
 // constant to the value the failure reports. Never re-pin to make a red test green
 // without establishing which of the two moved.
-const corpusDigest = "6b4f4b19200eeda13ab8e307c7dcb42ba2164f890c34ba060c6991d3a5c09b1d"
+//
+// Re-pinned 2026-08-23 for the two [2^23, 2^24) declarations added with the normative
+// integer clamp (schema#109): the suite was first run green with the clamp in the
+// audited home and the old corpus — the unclamped frozen and fold legs agreeing with
+// the clamped runtime on every old shape proves the clamp moved no pre-existing byte —
+// and only then were the new rows added and this constant re-pinned.
+const corpusDigest = "2f87bcb49e58df5d380a23a38d62c2bc512788b2ec4e3e956ab95b3876ff92ec"
 
 func TestCompressedFloatPrecomputedDifferential(t *testing.T) {
 	// the reference's sweep density and the exhaustive read side through 16-bit
