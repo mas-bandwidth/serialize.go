@@ -93,19 +93,19 @@ func initCompatData() compatData {
 		// exercised the band. With them, an unclamped side fails the byte-identity cmp.
 		clampRejectWitness: 8388609.0,  // witness A: top of [0, 8388609] res 1 (2^23+1 steps)
 		clampWideWitness:   16777215.0, // witness B: top of [0, 16777215] res 1 (2^24-1 steps)
-		doubleValue:          1.0 / 3.0,
-		uint8Value:           0x7F,
-		uint16Value:          0x1234,
-		uint32Value:          0x12345678,
-		uint64Value:          0x123456789ABCDEF0,
-		relativeNear:         101,  // difference of 1 from the base: exercises the one bit branch
-		relativeFar:          2100, // difference of 2000 from the base: exercises the twelve bit bucket
-		bytes:                [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
-		str:                  "golden",
-		wstr:                 "мир", // cyrillic, BMP only: representable on 2 byte wchar_t platforms too
-		bits33:               0x1DEADBEEF,
-		int64Full:            -123456789012345,
-		int64Range:           4123456789,
+		doubleValue:        1.0 / 3.0,
+		uint8Value:         0x7F,
+		uint16Value:        0x1234,
+		uint32Value:        0x12345678,
+		uint64Value:        0x123456789ABCDEF0,
+		relativeNear:       101,  // difference of 1 from the base: exercises the one bit branch
+		relativeFar:        2100, // difference of 2000 from the base: exercises the twelve bit bucket
+		bytes:              [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
+		str:                "golden",
+		wstr:               "мир", // cyrillic, BMP only: representable on 2 byte wchar_t platforms too
+		bits33:             0x1DEADBEEF,
+		int64Full:          -123456789012345,
+		int64Range:         4123456789,
 	}
 }
 
