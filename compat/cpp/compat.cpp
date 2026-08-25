@@ -60,6 +60,8 @@ struct CompatData
     float compressedFloatValue;
     float compressedFloatHalf;
     float compressedFloatShift;
+    float clampRejectWitness;
+    float clampWideWitness;
     double doubleValue;
     uint8_t uint8Value;
     uint16_t uint16Value;
@@ -89,6 +91,8 @@ struct CompatData
         compressedFloatValue = 5.0f;            // on-quantum anchor: agrees under float32, double and FMA alike, so it cannot discriminate
         compressedFloatHalf = 0.005f;           // half a quantum above min: an FMA rounds once and writes 0 where the format requires 1
         compressedFloatShift = -42.573f;        // off-quantum over a non-zero min: exercises the (value - min) and + min steps
+        clampRejectWitness = 8388609.0f;        // witness A: top of [0, 8388609] res 1 -- an unclamped writer emits a code its own reader rejects (schema#109; serialize#94)
+        clampWideWitness = 16777215.0f;         // witness B: top of [0, 16777215] res 1 -- an unclamped writer emits a code one bit wider than the field
         doubleValue = 1.0 / 3.0;
         uint8Value = 0x7F;
         uint16Value = 0x1234;
@@ -135,6 +139,11 @@ struct CompatData
         // max_integer_value 20000, bits 15, delta 200 — verified against that function
         // rather than hand-derived. Anything else is API misuse and trips the asserts.
         serialize_compressed_float_precomputed( stream, compressedFloatShift, 20000, 15, 200.0f, -100.0f );
+        // the clamp witnesses ride the derived-per-call entry point on BOTH language
+        // halves: the clamp lives in the audited home both entry points share, and
+        // writing max makes it load-bearing -- an unclamped writer changes these bytes
+        serialize_compressed_float( stream, clampRejectWitness, 0.0f, 8388609.0f, 1.0f );
+        serialize_compressed_float( stream, clampWideWitness, 0.0f, 16777215.0f, 1.0f );
         serialize_double( stream, doubleValue );
         serialize_uint8( stream, uint8Value );
         serialize_uint16( stream, uint16Value );
@@ -166,6 +175,8 @@ struct CompatData
             && compressedFloatValue == other.compressedFloatValue
             && compressedFloatHalf == other.compressedFloatHalf
             && compressedFloatShift == other.compressedFloatShift
+            && clampRejectWitness == other.clampRejectWitness
+            && clampWideWitness == other.clampWideWitness
             && doubleValue == other.doubleValue
             && uint8Value == other.uint8Value
             && uint16Value == other.uint16Value
