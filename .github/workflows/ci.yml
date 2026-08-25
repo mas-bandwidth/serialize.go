@@ -127,10 +127,14 @@ jobs:
       # exactly like a broken writer would, letting the gate pass buggy against
       # buggy. v1.11.0 is the first release carrying
       # serialize_compressed_float_precomputed, which this harness drives from the
-      # C++ side, and every release since v1.6.2 keeps the degenerate range
-      # (min == max) round trippable.
+      # C++ side; v1.12.0 is the first release carrying the normative integer clamp
+      # (STANDARD.md, schema#109), which the harness's two clamp witnesses make
+      # load-bearing -- against an older header those rows fail the byte-identity
+      # cmp, which is exactly the cross-language proof serialize#94 found missing.
+      # Every release since v1.6.2 keeps the degenerate range (min == max) round
+      # trippable.
       - name: download the pinned C++ serialize.h
-        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.11.0/serialize.h
+        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.14.0/serialize.h
       # asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse panics",
       # and the degenerate range must pass with them enabled, not around them.
       - name: build the C++ harness

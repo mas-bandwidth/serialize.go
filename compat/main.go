@@ -10,13 +10,16 @@
 //
 // The sequence includes a degenerate range (min == max), which costs zero bits: it
 // must round trip across both languages while leaving every downstream field on
-// exactly the bit it was on before. It sits at serialize call 7 of 26, so 19 fields
+// exactly the bit it was on before. It sits at serialize call 7 of 28, so 21 fields
 // follow it -- the point is not that it is central but that a great many fields come
 // after it, every one of which would shift and fail the round trip if the degenerate
 // range ever started consuming bit space. That is why adding it did not change a
-// single byte of this harness's output.
+// single byte of this harness's output. The two fields after the compressed floats
+// are the normative integer clamp's witnesses (STANDARD.md, schema#109), pinned here
+// so the clamp is proven ACROSS the language boundary and not only inside each
+// implementation (serialize#94).
 //
-// The three compressed floats are chosen deliberately. 5.0 lands exactly on a
+// The first three compressed floats are chosen deliberately. 5.0 lands exactly on a
 // quantum and agrees under float32, double and FMA alike -- for years it was the
 // ONLY compressed float vector in the family, which is how an arm64 writer that
 // fused the quantization into a single FMA shipped with every gate green. The two
@@ -49,6 +52,8 @@ type compatData struct {
 	compressedFloatValue float32
 	compressedFloatHalf  float32
 	compressedFloatShift float32
+	clampRejectWitness   float32
+	clampWideWitness     float32
 	doubleValue          float64
 	uint8Value           uint8
 	uint16Value          uint16
@@ -78,19 +83,29 @@ func initCompatData() compatData {
 		compressedFloatValue: 5.0,     // on-quantum anchor: agrees under float32, double and FMA alike, so it cannot discriminate
 		compressedFloatHalf:  0.005,   // half a quantum above min: an FMA rounds once and writes 0 where the format requires 1
 		compressedFloatShift: -42.573, // off-quantum over a non-zero min: exercises the (value - min) and + min steps
-		doubleValue:          1.0 / 3.0,
-		uint8Value:           0x7F,
-		uint16Value:          0x1234,
-		uint32Value:          0x12345678,
-		uint64Value:          0x123456789ABCDEF0,
-		relativeNear:         101,  // difference of 1 from the base: exercises the one bit branch
-		relativeFar:          2100, // difference of 2000 from the base: exercises the twelve bit bucket
-		bytes:                [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
-		str:                  "golden",
-		wstr:                 "мир", // cyrillic, BMP only: representable on 2 byte wchar_t platforms too
-		bits33:               0x1DEADBEEF,
-		int64Full:            -123456789012345,
-		int64Range:           4123456789,
+		// The normative integer clamp's witnesses (STANDARD.md, schema#109), writing max.
+		// Step counts in [2^23, 2^24) are where the float32 ulp of the scaled product
+		// reaches 1: an UNCLAMPED writer quantizes these to a code its own reader rejects
+		// (A: code 8388610 over max 8388609) or to a code one bit wider than the field
+		// (B: code 2^24 in a 24 bit field). Until these rows existed the clamp was proven
+		// inside each language and nowhere across the boundary (serialize#94): the gate
+		// stayed green against the pre-clamp v1.11.0 reference because no compat value
+		// exercised the band. With them, an unclamped side fails the byte-identity cmp.
+		clampRejectWitness: 8388609.0,  // witness A: top of [0, 8388609] res 1 (2^23+1 steps)
+		clampWideWitness:   16777215.0, // witness B: top of [0, 16777215] res 1 (2^24-1 steps)
+		doubleValue:        1.0 / 3.0,
+		uint8Value:         0x7F,
+		uint16Value:        0x1234,
+		uint32Value:        0x12345678,
+		uint64Value:        0x123456789ABCDEF0,
+		relativeNear:       101,  // difference of 1 from the base: exercises the one bit branch
+		relativeFar:        2100, // difference of 2000 from the base: exercises the twelve bit bucket
+		bytes:              [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
+		str:                "golden",
+		wstr:               "мир", // cyrillic, BMP only: representable on 2 byte wchar_t platforms too
+		bits33:             0x1DEADBEEF,
+		int64Full:          -123456789012345,
+		int64Range:         4123456789,
 	}
 }
 
@@ -134,6 +149,11 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 		SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error
 	}).SerializeCompressedFloat32Precomputed(&data.compressedFloatHalf, 1000, 10, 10.0, 0.0)
 	stream.SerializeCompressedFloat32(&data.compressedFloatShift, -100.0, 100.0, 0.01)
+	// the clamp witnesses ride the derived-per-call entry point on BOTH language halves:
+	// the clamp lives in the audited home both entry points share, and writing max makes
+	// it load-bearing -- an unclamped writer on either side changes these bytes
+	stream.SerializeCompressedFloat32(&data.clampRejectWitness, 0.0, 8388609.0, 1.0)
+	stream.SerializeCompressedFloat32(&data.clampWideWitness, 0.0, 16777215.0, 1.0)
 	stream.SerializeFloat64(&data.doubleValue)
 	stream.SerializeUint8(&data.uint8Value)
 	stream.SerializeUint16(&data.uint16Value)
