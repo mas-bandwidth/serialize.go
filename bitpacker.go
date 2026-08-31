@@ -226,7 +226,7 @@ type BitReader struct {
 	padded   []byte
 	numBits  int64
 	bitsRead int64
-	tailBase int      // byte index the tail window is based at
+	tailBase int                                   // byte index the tail window is based at
 	tail     [window64Bytes + windowBytes + 4]byte // zero padded copy of the final data bytes (buffers with less than window64Bytes of backing slack)
 }
 
