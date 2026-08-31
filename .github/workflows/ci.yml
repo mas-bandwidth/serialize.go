@@ -38,7 +38,6 @@ jobs:
       - run: go vet ./...
       - run: go test -short -race -shuffle=on ./...
       - run: go test -shuffle=on ./...
-      - run: go test -run=NONE -bench=. -benchtime=100x ./...
 
   lint:
     runs-on: ubuntu-latest
@@ -169,34 +168,6 @@ jobs:
             echo '```'
             echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
-
-  benchmark:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v7
-        with:
-          go-version: stable
-          cache: false
-      - name: benchmark base
-        run: |
-          git checkout ${{ github.event.pull_request.base.sha }}
-          go test -run=NONE -bench=. -count=10 -benchtime=0.2s . | tee /tmp/base.txt
-      - name: benchmark head
-        run: |
-          git checkout ${{ github.event.pull_request.head.sha }}
-          go test -run=NONE -bench=. -count=10 -benchtime=0.2s . | tee /tmp/head.txt
-      - name: compare
-        run: |
-          echo '## Benchmark comparison (base vs PR)' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Shared runners are noisy: treat small deltas as informational.' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          go run golang.org/x/perf/cmd/benchstat@latest /tmp/base.txt /tmp/head.txt | tee -a "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   apicompat:
     if: github.event_name == 'pull_request'

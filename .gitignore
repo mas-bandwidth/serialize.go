@@ -1,8 +1,6 @@
 *.test
 *.out
 *.prof
-bench/cpp/bench
-bench/cpp/serialize.h
 compat/cpp/compat
 compat/cpp/serialize.h
 compat/*.bin
