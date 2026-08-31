@@ -1977,7 +1977,7 @@ func TestReadBits64MatchesSplitReads(t *testing.T) {
 
 	for length := 0; length <= len(data); length++ {
 		slack := data[:length]                         // cap runs to 48
-		exact := append([]byte(nil), data[:length]...) // cap == length
+		exact := append([]byte(nil), data[:length]...) // cap is a size class, not length: slack varies 0..7 by length
 		for _, packet := range [][]byte{slack, exact} {
 			numBits := int64(length) * 8
 			for offset := int64(0); offset <= numBits; offset++ {

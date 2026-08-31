@@ -227,7 +227,7 @@ type BitReader struct {
 	numBits  int64
 	bitsRead int64
 	tailBase int      // byte index the tail window is based at
-	tail     [24]byte // zero padded copy of the final data bytes (no-slack buffers only)
+	tail     [window64Bytes + windowBytes + 4]byte // zero padded copy of the final data bytes (buffers with less than window64Bytes of backing slack)
 }
 
 // windowBytes is the reach of a readBits window load, and window64Bytes the reach of
@@ -251,9 +251,19 @@ func NewBitReader(data []byte) *BitReader {
 }
 
 // Reset points the bit reader at a data slice and clears all read state, allowing a
-// single reader to be reused without allocation. When the backing array has no slack
-// past the data, the final bytes are copied into the zero padded tail window so that
-// every read is a single 64 bit window load: see fillTail.
+// single reader to be reused without allocation. When the backing array has less than
+// window64Bytes of slack past the data, the final bytes are copied into the zero padded
+// tail window so that every read has a whole window of readable bytes beneath it: see
+// fillTail. Twelve is the exact minimum, not a round-up — a legal zero-bit read (a
+// degenerate min==max range) reaches readBits64 with byteIndex == len(data), so the
+// widest window a legal read can ask for needs len+12 <= cap.
+//
+// The cost of that threshold, stated because it is the one user-visible change: a buffer
+// with 7 to 11 bytes of slack now takes the tail path where it previously did not, which
+// costs one predictable branch per read AND a fillTail copy on every Reset (measured
+// 0.61 -> 3.51 ns). Arena-sliced buffers — the documented shape — have ample slack and
+// are unaffected; the band is reached by make([]byte, n) where n falls just under a size
+// class (n = 41..47 giving cap 48, n = 1017 giving cap 1024).
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
 	r.padded = data[:cap(data)]

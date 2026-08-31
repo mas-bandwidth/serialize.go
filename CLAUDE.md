@@ -33,8 +33,9 @@ INVARIANTS
   and every stream accepts it — only an inverted range panics.
 - **Zero allocations on every serialization path**, asserted with ReportAllocs.
 - **Write buffers must be a multiple of 8 bytes** (the writer stores qwords). The reader
-  accepts any length and detects backing-array slack via `cap()` for branchless 64-bit
-  window loads; slack bytes are loaded but never interpreted.
+  accepts any length and detects backing-array slack via `cap()` for branchless window
+  loads — 8 bytes for the 32-bit path, 12 for the fused 64-bit path; slack bytes are
+  loaded but never interpreted.
 
 DECISIONS THAT READ AS BUGS
 - errcheck is deliberately excluded from `_test.go` in `.golangci.yml`.
@@ -80,7 +81,8 @@ published only under serialize.go.
    (serialize_test.go) asserts it with `testing.AllocsPerRun`.
 5. **Write buffers must be multiples of 8 bytes** (the writer stores qwords). The
    reader accepts any length and detects backing-array slack via cap() to use fully
-   branchless 64 bit window loads; slack bytes are loaded but never interpreted.
+   branchless window loads (8 bytes for the 32-bit path, 12 for the fused 64-bit path);
+   slack bytes are loaded but never interpreted.
 
 ## Layout
 
