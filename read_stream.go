@@ -21,7 +21,7 @@ type ReadStream struct {
 }
 
 // NewReadStream creates a read stream that reads the bitpacked data in the given slice.
-// Any slice length is supported. For the fastest reads, keep at least 7 bytes of slack
+// Any slice length is supported. For the fastest reads, keep at least 12 bytes of slack
 // in the backing array beyond the data: see BitReader for details.
 func NewReadStream(data []byte) *ReadStream {
 	s := &ReadStream{}
@@ -84,13 +84,7 @@ func (s *ReadStream) SerializeBits64(value *uint64, bits int) error {
 	if s.reader.bitsRead+int64(bits) > s.reader.numBits {
 		return s.fail(ErrOverflow)
 	}
-	if bits <= 32 {
-		*value = uint64(s.reader.readBits(bits))
-		return nil
-	}
-	lo := s.reader.readBits(32)
-	hi := s.reader.readBits(bits - 32)
-	*value = uint64(hi)<<32 | uint64(lo)
+	*value = s.reader.readBits64(bits)
 	return nil
 }
 
@@ -131,15 +125,7 @@ func (s *ReadStream) SerializeInt64(value *int64, min, max int64) error {
 	if s.reader.bitsRead+int64(bits) > s.reader.numBits {
 		return s.fail(ErrOverflow)
 	}
-	var unsigned uint64
-	if bits <= 32 {
-		unsigned = uint64(s.reader.readBits(bits))
-	} else {
-		// low dword first, then the high remainder: same convention as SerializeBits64
-		lo := s.reader.readBits(32)
-		hi := s.reader.readBits(bits - 32)
-		unsigned = uint64(hi)<<32 | uint64(lo)
-	}
+	unsigned := s.reader.readBits64(bits)
 	// compare and add in the unsigned domain: the range may be wider than 2^63
 	if unsigned > uint64(max)-uint64(min) {
 		return s.fail(ErrValueOutOfRange)
@@ -148,28 +134,18 @@ func (s *ReadStream) SerializeInt64(value *int64, min, max int64) error {
 	return nil
 }
 
-// readGroups128 reads a 128 bit offset written in 32 bit groups, least significant
-// group first, with the final group carrying the remainder: the same splitting
-// convention as SerializeBits64 and SerializeInt64. numBits must be in [1,128] and
-// already bounds checked against the buffer.
+// readGroups128 reads a 128 bit offset least significant half first, with the final
+// half carrying the remainder: the same splitting convention as SerializeBits64 and
+// SerializeInt64. numBits must be in [1,128] and already bounds checked against the
+// buffer.
 func (s *ReadStream) readGroups128(numBits int) Uint128 {
 	var offset Uint128
-	switch {
-	case numBits <= 32:
-		offset.Lo = uint64(s.reader.readBits(numBits))
-	case numBits <= 64:
-		offset.Lo = uint64(s.reader.readBits(32))
-		offset.Lo |= uint64(s.reader.readBits(numBits-32)) << 32
-	case numBits <= 96:
-		offset.Lo = uint64(s.reader.readBits(32))
-		offset.Lo |= uint64(s.reader.readBits(32)) << 32
-		offset.Hi = uint64(s.reader.readBits(numBits - 64))
-	default:
-		offset.Lo = uint64(s.reader.readBits(32))
-		offset.Lo |= uint64(s.reader.readBits(32)) << 32
-		offset.Hi = uint64(s.reader.readBits(32))
-		offset.Hi |= uint64(s.reader.readBits(numBits-96)) << 32
+	if numBits <= 64 {
+		offset.Lo = s.reader.readBits64(numBits)
+		return offset
 	}
+	offset.Lo = s.reader.readBits64(64)
+	offset.Hi = s.reader.readBits64(numBits - 64)
 	return offset
 }
 
@@ -206,10 +182,8 @@ func (s *ReadStream) SerializeUint128(value *Uint128) error {
 		return s.fail(ErrOverflow)
 	}
 	var v Uint128
-	v.Lo = uint64(s.reader.readBits(32))
-	v.Lo |= uint64(s.reader.readBits(32)) << 32
-	v.Hi = uint64(s.reader.readBits(32))
-	v.Hi |= uint64(s.reader.readBits(32)) << 32
+	v.Lo = s.reader.readBits64(64)
+	v.Hi = s.reader.readBits64(64)
 	*value = v
 	return nil
 }
@@ -226,15 +200,7 @@ func (s *ReadStream) SerializeFixed64(value *int64, integerBits, fractionBits in
 	if s.reader.bitsRead+int64(numBits) > s.reader.numBits {
 		return s.fail(ErrOverflow)
 	}
-	var offset uint64
-	if numBits <= 32 {
-		offset = uint64(s.reader.readBits(numBits))
-	} else {
-		// low dword first, then the high remainder: same convention as SerializeInt64
-		lo := s.reader.readBits(32)
-		hi := s.reader.readBits(numBits - 32)
-		offset = uint64(hi)<<32 | uint64(lo)
-	}
+	offset := s.reader.readBits64(numBits)
 	if offset > rawRange {
 		return s.fail(ErrValueOutOfRange)
 	}
@@ -303,9 +269,7 @@ func (s *ReadStream) SerializeUint64(value *uint64) error {
 	if s.reader.bitsRead+64 > s.reader.numBits {
 		return s.fail(ErrOverflow)
 	}
-	lo := s.reader.readBits(32)
-	hi := s.reader.readBits(32)
-	*value = uint64(hi)<<32 | uint64(lo)
+	*value = s.reader.readBits64(64)
 	return nil
 }
 
@@ -343,9 +307,7 @@ func (s *ReadStream) SerializeFloat64(value *float64) error {
 	if s.reader.bitsRead+64 > s.reader.numBits {
 		return s.fail(ErrOverflow)
 	}
-	lo := s.reader.readBits(32)
-	hi := s.reader.readBits(32)
-	*value = math.Float64frombits(uint64(hi)<<32 | uint64(lo))
+	*value = math.Float64frombits(s.reader.readBits64(64))
 	return nil
 }
 

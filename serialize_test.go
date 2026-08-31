@@ -1947,3 +1947,58 @@ func TestStreamReset(t *testing.T) {
 		t.Fatalf("expected 0x1234 after reset, got %#x (err %v)", value, err)
 	}
 }
+
+// TestReadBits64MatchesSplitReads holds the widened window read to the dword pair it
+// replaces: for every data length, every starting bit offset and every width in
+// [0,64], readBits64 must return exactly what a low dword plus high remainder pair
+// returns. Both buffer shapes are covered — with backing slack (branchless window
+// loads) and exact sized (the tail window) — because the widened window reaches
+// further into the tail than the narrow one and the boundary is where it can break.
+func TestReadBits64MatchesSplitReads(t *testing.T) {
+	// deterministic pseudo random data: every byte pattern matters here
+	data := make([]byte, 48)
+	state := uint32(0x9e3779b9)
+	for i := range data {
+		state = state*1664525 + 1013904223
+		data[i] = byte(state >> 24)
+	}
+
+	split := func(r *BitReader, bits int) uint64 {
+		if bits <= 32 {
+			if bits == 0 {
+				return 0
+			}
+			return uint64(r.readBits(bits))
+		}
+		lo := r.readBits(32)
+		hi := r.readBits(bits - 32)
+		return uint64(hi)<<32 | uint64(lo)
+	}
+
+	for length := 0; length <= len(data); length++ {
+		slack := data[:length]                         // cap runs to 48
+		exact := append([]byte(nil), data[:length]...) // cap == length
+		for _, packet := range [][]byte{slack, exact} {
+			numBits := int64(length) * 8
+			for offset := int64(0); offset <= numBits; offset++ {
+				for bits := 0; bits <= 64; bits++ {
+					if offset+int64(bits) > numBits {
+						continue
+					}
+					wide := NewBitReader(packet)
+					wide.bitsRead = offset
+					got := wide.readBits64(bits)
+
+					pair := NewBitReader(packet)
+					pair.bitsRead = offset
+					want := split(pair, bits)
+
+					if got != want || wide.bitsRead != pair.bitsRead {
+						t.Fatalf("len=%d cap=%d offset=%d bits=%d: got %#x (at %d), want %#x (at %d)",
+							length, cap(packet), offset, bits, got, wide.bitsRead, want, pair.bitsRead)
+					}
+				}
+			}
+		}
+	}
+}
