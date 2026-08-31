@@ -267,6 +267,11 @@ func (r *BitReader) fillTail() {
 // reporting false if the read would go past the end of the buffer. It exists so stream
 // wrappers can fuse the bounds check and the window load into their own bodies: both
 // this and readBits stay within the compiler's inlining budget.
+//
+// MEASURED go1.27.0, budget 80: readBits costs 64, this costs EXACTLY 80. This body is
+// one unit from falling out of inline, and nothing goes red when it does — the code
+// keeps working and every caller silently pays a call. Any edit here re-measures with
+// `go build -gcflags=-m -m` before landing.
 func (r *BitReader) tryReadBits(bits int) (uint32, bool) {
 	if r.bitsRead+int64(bits) > r.numBits {
 		return 0, false
