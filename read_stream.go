@@ -522,13 +522,24 @@ func (s *ReadStream) SerializeWideString(value *string, bufferSize int) error {
 // SerializeAlign skips ahead to the next byte boundary, verifying that the padding bits
 // are zero. Nonzero padding fails with ErrAlign, which typically means the read and
 // write serialize functions don't match.
+// The body is shaped to fit the compiler's inlining budget, so an already aligned
+// stream pays no call at all: generated code aligns wherever the schema says align,
+// and the position is frequently already a byte boundary. The aligned arm returns
+// s.err, which is nil on a healthy stream; the padding arm carries the error check
+// and the bounds check, exactly as before.
 func (s *ReadStream) SerializeAlign() error {
-	if s.err != nil {
+	alignBits := int(-s.reader.bitsRead) & 7 // (8 - bitsRead%8) % 8, in two's complement
+	if alignBits == 0 {
 		return s.err
 	}
-	alignBits := s.reader.AlignBits()
-	if alignBits == 0 {
-		return nil
+	return s.readAlign(alignBits)
+}
+
+// readAlign reads and verifies alignBits of zero padding: SerializeAlign's unaligned
+// arm, outlined so the aligned arm stays inlinable.
+func (s *ReadStream) readAlign(alignBits int) error {
+	if s.err != nil {
+		return s.err
 	}
 	if s.reader.bitsRead+int64(alignBits) > s.reader.numBits {
 		return s.fail(ErrOverflow)

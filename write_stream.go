@@ -509,13 +509,17 @@ func (s *WriteStream) SerializeWideString(value *string, bufferSize int) error {
 }
 
 // SerializeAlign pads the stream with zero bits to the next byte boundary.
+//
+// The body is shaped to fit the compiler's inlining budget, so an already aligned
+// stream pays no call at all: generated code aligns wherever the schema says align,
+// and the position is frequently already a byte boundary. The aligned arm returns
+// s.err, which is nil on a healthy stream; the padding arm's writeBits refuses via
+// the poisoned bit budget after a latched error. Both are exactly the behavior of
+// the leading error check they replace.
 func (s *WriteStream) SerializeAlign() error {
-	if s.err != nil {
-		return s.err
-	}
-	alignBits := int(8-s.bitsWritten%8) % 8
+	alignBits := int(-s.bitsWritten) & 7 // (8 - bitsWritten%8) % 8, in two's complement
 	if alignBits == 0 {
-		return nil
+		return s.err
 	}
 	return s.writeBits(0, alignBits)
 }
