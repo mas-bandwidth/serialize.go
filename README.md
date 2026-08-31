@@ -157,9 +157,7 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 # Performance
 
-All serialization paths are zero allocation. On an Apple M3 Ultra the bitpacker writes and reads mixed width values at around 2.1ns per value, and a representative 133 byte game network packet serializes at around 10 million packets per second per core. Interface dispatch through `Stream` costs only 6-8% over the concrete stream types.
-
-The C++ serialize library is 2-6× faster on the same benchmarks, mostly because its release builds compile away the safety checks that serialize.go deliberately keeps on in every build. Full benchmark numbers and the cross language comparison are in [docs/performance.md](docs/performance.md).
+All serialization paths are zero allocation. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 # Limitations
 
