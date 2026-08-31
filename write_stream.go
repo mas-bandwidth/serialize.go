@@ -12,10 +12,18 @@ import (
 // write with it.
 //
 // The writer state is deliberately flat (not a wrapped BitWriter) and minimal, so the
-// per-field write path fits the compiler's inlining budget: the pending bit count is
+// packing helper fits the compiler's inlining budget: the pending bit count is
 // bitsWritten&63 (every spill removes exactly 64 bits, so the two never drift), and
 // the current qword's store offset is (bitsWritten>>3)&^7. The bit stream produced is
 // bit-for-bit identical to BitWriter's and to the C++ serialize library.
+//
+// What that buys, stated as measured rather than as intent (go1.27.0, budget 80):
+// tryWriteBits costs 64 and inlines, so a caller that packs directly pays no call.
+// The per-field entry point writeBits costs 92 and DOES NOT inline — its error latch
+// and the fail path push it past the budget — so generated code calling writeBits per
+// field pays one real call per field. ReadStream.readBits is the same shape at 106.
+// Closing that gap is a live question (mas-bandwidth/schema#170's B1); nothing here
+// should be read as claiming it is already closed.
 //
 // The zero value is not usable: create a WriteStream with NewWriteStream, or Reset one
 // onto a buffer before use.
