@@ -209,14 +209,15 @@ func (w *BitWriter) Data() []byte {
 // refill loop, so reads carry no dependency between calls other than advancing the bit
 // index.
 //
-// Any buffer size is supported. For the fastest reads, keep at least 7 bytes of slack in
+// Any buffer size is supported. For the fastest reads, keep at least 12 bytes of slack in
 // the backing array beyond the data — for example, read packets into a large buffer and
 // slice the packet out of it. The reader detects the slack via cap() and uses the fully
 // branchless window load everywhere; without slack, Reset copies the final bytes of the
 // data into a small zero padded tail window, and reads near the end of the buffer load
-// from that instead. Either way the load is a single 64 bit window: slack (or padding)
-// bytes are loaded but never interpreted, because bits past the end of the data cannot
-// reach the output of a read.
+// from that instead. Either way the load is a single window: slack (or padding) bytes
+// are loaded but never interpreted, because bits past the end of the data cannot reach
+// the output of a read. A [1,32] field needs an 8 byte window and a [1,64] field a 12
+// byte one, which is where the 12 comes from.
 //
 // The zero value is an exhausted reader: create one with NewBitReader, or Reset one onto
 // a buffer before use.
@@ -225,9 +226,20 @@ type BitReader struct {
 	padded   []byte
 	numBits  int64
 	bitsRead int64
-	tailBase int      // byte index the tail window is based at
-	tail     [16]byte // zero padded copy of the final data bytes (no-slack buffers only)
+	tailBase int                                   // byte index the tail window is based at
+	tail     [window64Bytes + windowBytes + 4]byte // zero padded copy of the final data bytes (buffers with less than window64Bytes of backing slack)
 }
+
+// windowBytes is the reach of a readBits window load, and window64Bytes the reach of
+// a readBits64 one: 8 data bytes hold any [1,32] field at any bit offset, and 12 hold
+// any [1,64] field. A read whose window would run past the backing array takes it from
+// the tail instead, which is why the tail is based window64Bytes back from the end and
+// is window64Bytes+windowBytes+4 long — the widest window a legal read can ask for
+// starts at the very last byte index.
+const (
+	windowBytes   = 8
+	window64Bytes = 12
+)
 
 // NewBitReader creates a bit reader that reads the bitpacked data in the given slice.
 // The slice does not need any particular alignment. Buffer sizes are effectively
@@ -239,26 +251,36 @@ func NewBitReader(data []byte) *BitReader {
 }
 
 // Reset points the bit reader at a data slice and clears all read state, allowing a
-// single reader to be reused without allocation. When the backing array has no slack
-// past the data, the final bytes are copied into the zero padded tail window so that
-// every read is a single 64 bit window load: see fillTail.
+// single reader to be reused without allocation. When the backing array has less than
+// window64Bytes of slack past the data, the final bytes are copied into the zero padded
+// tail window so that every read has a whole window of readable bytes beneath it: see
+// fillTail. Twelve is the exact minimum, not a round-up — a legal zero-bit read (a
+// degenerate min==max range) reaches readBits64 with byteIndex == len(data), so the
+// widest window a legal read can ask for needs len+12 <= cap.
+//
+// The cost of that threshold, stated because it is the one user-visible change: a buffer
+// with 7 to 11 bytes of slack now takes the tail path where it previously did not, which
+// costs one predictable branch per read AND a fillTail copy on every Reset (measured
+// 0.61 -> 3.51 ns). Arena-sliced buffers — the documented shape — have ample slack and
+// are unaffected; the band is reached by make([]byte, n) where n falls just under a size
+// class (n = 41..47 giving cap 48, n = 1017 giving cap 1024).
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
 	r.padded = data[:cap(data)]
 	r.numBits = int64(len(data)) * 8
 	r.bitsRead = 0
-	if cap(data)-len(data) < 7 {
+	if cap(data)-len(data) < window64Bytes {
 		r.fillTail()
 	}
 }
 
 // fillTail copies the final bytes of the data into the tail window, zero padded, for
-// buffers whose backing array has less than 7 bytes of slack past the data. Reads near
-// the end of such a buffer load their 64 bit window from the tail instead of the data.
+// buffers whose backing array has less than window64Bytes of slack past the data. Reads
+// near the end of such a buffer load their window from the tail instead of the data.
 // The padding bytes are never interpreted — bits past the end of the data cannot reach
 // the output of a read — so zeros here produce exactly the same outputs as slack bytes.
 func (r *BitReader) fillTail() {
-	r.tailBase = max(len(r.data)-8, 0)
+	r.tailBase = max(len(r.data)-window64Bytes, 0)
 	n := copy(r.tail[:], r.data[r.tailBase:])
 	clear(r.tail[n:])
 }
@@ -267,6 +289,11 @@ func (r *BitReader) fillTail() {
 // reporting false if the read would go past the end of the buffer. It exists so stream
 // wrappers can fuse the bounds check and the window load into their own bodies: both
 // this and readBits stay within the compiler's inlining budget.
+//
+// MEASURED go1.27.0, budget 80: readBits costs 64, this costs EXACTLY 80. This body is
+// one unit from falling out of inline, and nothing goes red when it does — the code
+// keeps working and every caller silently pays a call. Any edit here re-measures with
+// `go build -gcflags=-m -m` before landing.
 func (r *BitReader) tryReadBits(bits int) (uint32, bool) {
 	if r.bitsRead+int64(bits) > r.numBits {
 		return 0, false
@@ -284,7 +311,7 @@ func (r *BitReader) readBits(bits int) uint32 {
 	byteIndex := int(r.bitsRead >> 3)
 
 	src := r.padded
-	if byteIndex+8 > len(src) {
+	if byteIndex+windowBytes > len(src) {
 		// no slack past the data: the final bytes live in the zero padded tail window
 		src = r.tail[:]
 		byteIndex -= r.tailBase
@@ -296,6 +323,33 @@ func (r *BitReader) readBits(bits int) uint32 {
 	r.bitsRead += int64(bits)
 
 	return output
+}
+
+// readBits64 is readBits widened to [1,64]: the unchecked hot path shared by the read
+// stream's 64 bit and 128 bit paths, which perform their own validation before calling
+// it. bits must be in [0,64] and must not read past the end of the buffer.
+//
+// A 64 bit window shifted by the bit remainder yields only 64-remainder bits, so the
+// window is widened by one dword: the pair covers any [1,64] field at any bit offset,
+// and a byte aligned read leaves the dword's contribution shifted out entirely (Go
+// defines a shift of 64 on a uint64 as zero). One window selection, one advance and
+// one mask replace the two of a low dword plus high remainder pair.
+func (r *BitReader) readBits64(bits int) uint64 {
+	byteIndex := int(r.bitsRead >> 3)
+
+	src := r.padded
+	if byteIndex+window64Bytes > len(src) {
+		// no slack past the data: the final bytes live in the zero padded tail window
+		src = r.tail[:]
+		byteIndex -= r.tailBase
+	}
+	shift := uint(r.bitsRead & 7)
+	window := binary.LittleEndian.Uint64(src[byteIndex:])>>shift |
+		uint64(binary.LittleEndian.Uint32(src[byteIndex+windowBytes:]))<<(64-shift)
+
+	r.bitsRead += int64(bits)
+
+	return window & (^uint64(0) >> (64 - bits))
 }
 
 // WouldReadPastEnd returns true if reading the given number of bits would read past the

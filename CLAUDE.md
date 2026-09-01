@@ -33,8 +33,9 @@ INVARIANTS
   and every stream accepts it — only an inverted range panics.
 - **Zero allocations on every serialization path**, asserted with ReportAllocs.
 - **Write buffers must be a multiple of 8 bytes** (the writer stores qwords). The reader
-  accepts any length and detects backing-array slack via `cap()` for branchless 64-bit
-  window loads; slack bytes are loaded but never interpreted.
+  accepts any length and detects backing-array slack via `cap()` for branchless window
+  loads — 8 bytes for the 32-bit path, 12 for the fused 64-bit path; slack bytes are
+  loaded but never interpreted.
 
 DECISIONS THAT READ AS BUGS
 - errcheck is deliberately excluded from `_test.go` in `.golangci.yml`.
@@ -54,14 +55,10 @@ published only under serialize.go.
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
    `TestGoldenWireFormat` pins 112 golden bytes copied verbatim from the C++ test
-   suite, `bench/cpp/bench.cpp` asserts the benchmark packet is the same 133 bytes
-   on both sides (a size check, so both are benchmarked on equal work — not a
-   byte-identity proof), and the cppcompat CI job round trips the `compat/` harness
+   suite, and the cppcompat CI job round trips the `compat/` harness
    against the real C++ library (pinned serialize.h) on every push and PR: the Go
    and C++ streams must be byte identical and each side must decode the other's.
-   Byte identity is established by the golden test and cppcompat, not by the
-   benchmark — the `benchmark` CI job is a base-vs-PR benchstat comparison and
-   asserts nothing about bytes at all. Never change any encoding without
+   Never change any encoding without
    coordinating with the C++ library. When adding serialization features, port
    them from serialize.h, mirror its tests, and extend the compat harness (both
    halves).
@@ -80,11 +77,12 @@ published only under serialize.go.
    `Continue` (continuation-bit polarity) and `Until` (termination-bit polarity) are
    the safe sentinel loop primitives; both polarities are needed because the polarity
    is part of the wire format. See docs/reading_untrusted_data.md.
-4. **Zero allocations on all serialization paths.** Benchmarks assert with
-   ReportAllocs.
+4. **Zero allocations on all serialization paths.** `TestSerializeStringReadEqualContentDoesNotAllocate`
+   (serialize_test.go) asserts it with `testing.AllocsPerRun`.
 5. **Write buffers must be multiples of 8 bytes** (the writer stores qwords). The
    reader accepts any length and detects backing-array slack via cap() to use fully
-   branchless 64 bit window loads; slack bytes are loaded but never interpreted.
+   branchless window loads (8 bytes for the 32-bit path, 12 for the fused 64-bit path);
+   slack bytes are loaded but never interpreted.
 
 ## Layout
 
@@ -100,30 +98,27 @@ published only under serialize.go.
 - `serialize_test.go` — ported C++ test suite + golden wire test + DoS termination tests
 - `int128_test.go` — 128 bit pair known-answer tests + differentials against math/big
 - `fixed_test.go` — fixed point + 128 bit stream tests, golden pins derived from STANDARD.md
-- `fuzz_test.go`, `bench_test.go`, `example_test.go` (examples ported from example.cpp)
-- `bench/cpp/bench.cpp` — C++ comparison benchmark (results + analysis in docs/performance.md)
+- `fuzz_test.go`, `example_test.go` (examples ported from example.cpp)
 - `compat/` — cross language wire compat harness (`main.go` + `cpp/compat.cpp`, kept
   in lockstep), run by the cppcompat CI job
-- `docs/` — full treatments of reading untrusted data and performance/C++ comparison;
-  the README keeps condensed versions that link here
+- `docs/` — the full treatment of reading untrusted data; the README keeps a
+  condensed version that links here
 
 ## Commands
 
 - `go test ./...` — full suite (includes a 320MB large-buffer test; `-short` skips it)
 - `go test -short -race ./...`
 - `go test -fuzz=FuzzReadStream -fuzztime=30s .` (also FuzzRoundTrip)
-- `go test -run=NONE -bench=. -count=10 -benchtime=0.5s .` then benchstat
 - `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run` —
   config in `.golangci.yml`; errcheck is deliberately excluded from `_test.go`
   (the documented sticky-error pattern leaves calls unchecked there)
 - `go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...`
-- C++ comparison: see the header comment in `bench/cpp/bench.cpp`
 - C++ wire compat harness: see the header comment in `compat/cpp/compat.cpp`
 
 ## CI (.github/workflows/ci.yml)
 
 Push/PR, plus a weekly scheduled run: test matrix (3 OSes on stable Go plus an
-ubuntu leg on the go.mod minimum; race + shuffle + full + bench smoke), lint
+ubuntu leg on the go.mod minimum; race + shuffle + full), lint
 (golangci-lint — version pinned in ci.yml, bump deliberately — + modernize +
 `go mod tidy -diff`), vuln (govulncheck), cross (linux/386 full tests — 32 bit
 `int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 build
@@ -164,5 +159,3 @@ not fetchable as serialize.go — v1.3.0 is the first valid version of the new p
 (gorelease/apicompat cannot compare against the pre-rename tags). After
 tagging, prime the
 module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/serialize.go/@v/<tag>.info`.
-Update benchmark numbers (docs/performance.md and the README headline figures) only
-from fresh runs on the stated hardware (Apple M3 Ultra) with the stated methodology.

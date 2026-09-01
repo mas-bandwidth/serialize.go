@@ -12,10 +12,18 @@ import (
 // write with it.
 //
 // The writer state is deliberately flat (not a wrapped BitWriter) and minimal, so the
-// per-field write path fits the compiler's inlining budget: the pending bit count is
+// packing helper fits the compiler's inlining budget: the pending bit count is
 // bitsWritten&63 (every spill removes exactly 64 bits, so the two never drift), and
 // the current qword's store offset is (bitsWritten>>3)&^7. The bit stream produced is
 // bit-for-bit identical to BitWriter's and to the C++ serialize library.
+//
+// What that buys, stated as measured rather than as intent (go1.27.0, budget 80):
+// tryWriteBits costs 64 and inlines, so a caller that packs directly pays no call.
+// The per-field entry point writeBits costs 92 and DOES NOT inline — its error latch
+// and the fail path push it past the budget — so generated code calling writeBits per
+// field pays one real call per field. ReadStream.readBits is the same shape at 106.
+// Closing that gap is a live question (mas-bandwidth/schema#170's B1); nothing here
+// should be read as claiming it is already closed.
 //
 // The zero value is not usable: create a WriteStream with NewWriteStream, or Reset one
 // onto a buffer before use.
@@ -93,6 +101,31 @@ func (s *WriteStream) tryWriteBits(value uint32, bits int) bool {
 	return true
 }
 
+// tryWriteBits64 is tryWriteBits for widths in [1,64]: the same fused bounds check and
+// packing, with one spill store at most. The bit stream it produces is identical to
+// writing the same bits in any smaller pieces — the scratch is filled from the low end
+// either way — so it is a drop in replacement for a low dword plus high remainder pair
+// that costs one bounds check, one scratch update and one spill test instead of two.
+//
+// The value MUST be masked to bits by the caller, exactly as for tryWriteBits.
+func (s *WriteStream) tryWriteBits64(value uint64, bits int) bool {
+	bw := s.bitsWritten
+	if bw+int64(bits) > s.numBits {
+		return false
+	}
+	sb := int(bw) & 63
+	s.scratch |= value << sb
+	s.bitsWritten = bw + int64(bits)
+	if sb+bits >= 64 {
+		binary.LittleEndian.PutUint64(s.data[(bw>>3)&^7:], s.scratch)
+		// sb is in [0,63] and the shift count is in [1,64]; Go defines a shift of 64
+		// on a uint64 as zero, which is the correct carry when the field ended the
+		// qword exactly
+		s.scratch = value >> (64 - sb)
+	}
+	return true
+}
+
 // writeBits bounds checks and writes bits that have already been validated to [1,32]
 // and masked to that width. One outlined call per field with no calls inside it: the
 // packing fast path and the error latch both fuse into this body.
@@ -126,15 +159,9 @@ func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
 	}
-	v := *value
-	if bits <= 32 {
-		return s.writeBits(uint32(v)&(^uint32(0)>>(32-bits)), bits)
-	}
-	if s.bitsWritten+int64(bits) > s.numBits {
+	if !s.tryWriteBits64(*value&(^uint64(0)>>(64-bits)), bits) {
 		return s.fail(ErrOverflow)
 	}
-	s.tryWriteBits(uint32(v), 32)
-	s.tryWriteBits(uint32(v>>32)&(^uint32(0)>>(64-bits)), bits-32)
 	return nil
 }
 
@@ -168,44 +195,26 @@ func (s *WriteStream) SerializeInt64(value *int64, min, max int64) error {
 		return s.fail(ErrValueOutOfRange)
 	}
 	bits := BitsRequired64(uint64(min), uint64(max))
-	// subtract in the unsigned domain: the range may be wider than 2^63; the offset
-	// is within the range, so both dwords are already masked to their widths
-	unsigned := uint64(v) - uint64(min)
-	if s.bitsWritten+int64(bits) > s.numBits {
+	// subtract in the unsigned domain: the range may be wider than 2^63. The offset is
+	// within the range, so it is already masked to bits.
+	if !s.tryWriteBits64(uint64(v)-uint64(min), bits) {
 		return s.fail(ErrOverflow)
 	}
-	if bits <= 32 {
-		s.tryWriteBits(uint32(unsigned), bits)
-		return nil
-	}
-	// low dword first, then the high remainder: same convention as SerializeBits64
-	s.tryWriteBits(uint32(unsigned), 32)
-	s.tryWriteBits(uint32(unsigned>>32), bits-32)
 	return nil
 }
 
-// writeGroups128 writes a 128 bit offset in 32 bit groups, least significant group
-// first, with the final group carrying the remainder: the same splitting convention
-// as SerializeBits64 and SerializeInt64. numBits must be in [1,128] and already
-// bounds checked against the buffer, and the offset must be within its numBits-wide
-// range, so every group is already masked to its width.
+// writeGroups128 writes a 128 bit offset least significant half first, with the final
+// half carrying the remainder: the same splitting convention as SerializeBits64 and
+// SerializeInt64, and the same wire bits as writing it in any smaller pieces. numBits
+// must be in [1,128] and already bounds checked against the buffer, and the offset must
+// be within its numBits-wide range, so every half is already masked to its width.
 func (s *WriteStream) writeGroups128(offset Uint128, numBits int) {
-	switch {
-	case numBits <= 32:
-		s.tryWriteBits(uint32(offset.Lo), numBits)
-	case numBits <= 64:
-		s.tryWriteBits(uint32(offset.Lo), 32)
-		s.tryWriteBits(uint32(offset.Lo>>32), numBits-32)
-	case numBits <= 96:
-		s.tryWriteBits(uint32(offset.Lo), 32)
-		s.tryWriteBits(uint32(offset.Lo>>32), 32)
-		s.tryWriteBits(uint32(offset.Hi), numBits-64)
-	default:
-		s.tryWriteBits(uint32(offset.Lo), 32)
-		s.tryWriteBits(uint32(offset.Lo>>32), 32)
-		s.tryWriteBits(uint32(offset.Hi), 32)
-		s.tryWriteBits(uint32(offset.Hi>>32), numBits-96)
+	if numBits <= 64 {
+		s.tryWriteBits64(offset.Lo, numBits)
+		return
 	}
+	s.tryWriteBits64(offset.Lo, 64)
+	s.tryWriteBits64(offset.Hi, numBits-64)
 }
 
 // SerializeInt128 writes *value, which must be in [min,max], using only the bits
@@ -240,10 +249,8 @@ func (s *WriteStream) SerializeUint128(value *Uint128) error {
 	if s.bitsWritten+128 > s.numBits {
 		return s.fail(ErrOverflow)
 	}
-	s.tryWriteBits(uint32(value.Lo), 32)
-	s.tryWriteBits(uint32(value.Lo>>32), 32)
-	s.tryWriteBits(uint32(value.Hi), 32)
-	s.tryWriteBits(uint32(value.Hi>>32), 32)
+	s.tryWriteBits64(value.Lo, 64)
+	s.tryWriteBits64(value.Hi, 64)
 	return nil
 }
 
@@ -262,13 +269,7 @@ func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits i
 		return s.fail(ErrOverflow)
 	}
 	// the offset is within the raw range, so both dwords are already masked
-	if numBits <= 32 {
-		s.tryWriteBits(uint32(offset), numBits)
-		return nil
-	}
-	// low dword first, then the high remainder: same convention as SerializeInt64
-	s.tryWriteBits(uint32(offset), 32)
-	s.tryWriteBits(uint32(offset>>32), numBits-32)
+	s.tryWriteBits64(offset, numBits)
 	return nil
 }
 
@@ -310,12 +311,9 @@ func (s *WriteStream) SerializeUint32(value *uint32) error {
 
 // SerializeUint64 writes an unsigned 64 bit integer as the low dword then the high dword.
 func (s *WriteStream) SerializeUint64(value *uint64) error {
-	if s.bitsWritten+64 > s.numBits {
+	if !s.tryWriteBits64(*value, 64) {
 		return s.fail(ErrOverflow)
 	}
-	v := *value
-	s.tryWriteBits(uint32(v), 32)
-	s.tryWriteBits(uint32(v>>32), 32)
 	return nil
 }
 
@@ -509,13 +507,17 @@ func (s *WriteStream) SerializeWideString(value *string, bufferSize int) error {
 }
 
 // SerializeAlign pads the stream with zero bits to the next byte boundary.
+//
+// The body is shaped to fit the compiler's inlining budget, so an already aligned
+// stream pays no call at all: generated code aligns wherever the schema says align,
+// and the position is frequently already a byte boundary. The aligned arm returns
+// s.err, which is nil on a healthy stream; the padding arm's writeBits refuses via
+// the poisoned bit budget after a latched error. Both are exactly the behavior of
+// the leading error check they replace.
 func (s *WriteStream) SerializeAlign() error {
-	if s.err != nil {
-		return s.err
-	}
-	alignBits := int(8-s.bitsWritten%8) % 8
+	alignBits := int(-s.bitsWritten) & 7 // (8 - bitsWritten%8) % 8, in two's complement
 	if alignBits == 0 {
-		return nil
+		return s.err
 	}
 	return s.writeBits(0, alignBits)
 }

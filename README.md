@@ -159,14 +159,12 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 # Performance
 
-All serialization paths are zero allocation. On an Apple M3 Ultra the bitpacker writes and reads mixed width values at around 2.1ns per value, and a representative 133 byte game network packet serializes at around 10 million packets per second per core. Interface dispatch through `Stream` costs only 6-8% over the concrete stream types.
-
-The C++ serialize library is 2-6× faster on the same benchmarks, mostly because its release builds compile away the safety checks that serialize.go deliberately keeps on in every build. Full benchmark numbers and the cross language comparison are in [docs/performance.md](docs/performance.md).
+All serialization paths are zero allocation. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 # Limitations
 
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment.
-* Read buffers may be any number of bytes. For the fastest reads, keep at least 7 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and uses fully branchless window loads; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted.
+* Read buffers may be any number of bytes. For the fastest reads, keep at least 12 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and uses fully branchless window loads; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted.
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
 * `SerializeWideString` stores 32 bits per UTF-16 code unit and is wire compatible with `serialize_wstring` in the C++ library: astral code points are split into surrogate pairs on write and recombined on read, so every platform produces identical bytes (STANDARD.md). Groups that are not UTF-16 code units (values above 0xFFFF) and unpaired surrogates fail on read.
 
