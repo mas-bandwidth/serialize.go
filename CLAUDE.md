@@ -30,8 +30,16 @@ INVARIANTS
   and return errors. Panics are reserved for API misuse only (bits outside [1,32]/[1,64],
   min > max, write buffer not a multiple of 8). The fuzz targets enforce this.
   **min == max is legal, not misuse**: the degenerate range costs zero bits (STANDARD.md),
-  and every stream accepts it — only an inverted range panics.
-- **Zero allocations on every serialization path**, asserted with ReportAllocs.
+  and every stream accepts it — only an inverted range panics. int_relative's `previous`
+  is caller state, not wire data: outside the domain 0..2147483647 it panics too, so never
+  pass a value you just read off the wire.
+- **Zero allocations on every serialization path EXCEPT a read that constructs a string.**
+  SerializeString allocates only when the content changed; SerializeWideString allocates
+  per read (it decodes UTF-16 groups into a Go string). Everything else allocates nothing.
+- **STANDARD.md and conformance/ are VENDORED VERBATIM** from mas-bandwidth/serialize; the
+  spec-sync and corpus-sync CI jobs fail on drift. This library implements FORMAT VERSION
+  1.1. TestConformanceCorpus runs every corpus vector through the read stream and never
+  computes an expectation of its own.
 - **Write buffers must be a multiple of 8 bytes** (the writer stores qwords). The reader
   accepts any length and detects backing-array slack via `cap()` for branchless window
   loads — 8 bytes for the 32-bit path, 12 for the fused 64-bit path; slack bytes are
@@ -67,18 +75,27 @@ published only under serialize.go.
    (bits out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes).
    The fuzz targets enforce this — keep them passing. A degenerate range where
    min == max is **not** misuse: STANDARD.md defines it as costing zero bits, and
-   the ranged integer streams accept it (see degenerate_test.go). The one exception
-   is SerializeCompressedFloat32, which still requires a strict min < max — its
-   quantization divides by the range, and the C++ library asserts the same.
+   the ranged integer streams accept it on every width, 32, 64 and 128 (see
+   degenerate_test.go). The one exception is SerializeCompressedFloat32, which still
+   requires a strict min < max — it is not a ranged operation, its quantization divides
+   by the range, and STANDARD.md excludes it by name. SerializeIntRelative's `previous`
+   is the third misuse panic: it is the caller's own state, never wire data, and lives in
+   the int_relative domain 0..2147483647.
 3. **Sticky errors and the control flow rule.** The first error latches on the
-   stream; later serialize calls are no-ops that leave values unmodified. Therefore
+   stream; later serialize calls are no-ops that leave values unmodified. That is
+   STANDARD.md's terminal-failure rule satisfied by latch, and only Reset clears it
+   (terminal_test.go pins all six failure shapes). Non-mutation is per scalar read; a
+   caller-owned slice passed to SerializeBytes is unspecified after a refusal. Therefore
    any serialized value that controls a loop (count, sentinel bit) must have its
    error checked before use, or the loop spins forever on truncated packets — a DoS.
    `Continue` (continuation-bit polarity) and `Until` (termination-bit polarity) are
    the safe sentinel loop primitives; both polarities are needed because the polarity
    is part of the wire format. See docs/reading_untrusted_data.md.
-4. **Zero allocations on all serialization paths.** `TestSerializeStringReadEqualContentDoesNotAllocate`
-   (serialize_test.go) asserts it with `testing.AllocsPerRun`.
+4. **Zero allocations on all serialization paths, except a read that constructs a
+   string.** `TestSerializeStringReadEqualContentDoesNotAllocate` (serialize_test.go)
+   asserts with `testing.AllocsPerRun` that SerializeString allocates nothing when the
+   content is unchanged; it allocates one string when the content differs, and
+   SerializeWideString allocates per read. The README says so in the same words.
 5. **Write buffers must be multiples of 8 bytes** (the writer stores qwords). The
    reader accepts any length and detects backing-array slack via cap() to use fully
    branchless window loads (8 bytes for the 32-bit path, 12 for the fused 64-bit path);
@@ -103,6 +120,10 @@ published only under serialize.go.
   in lockstep), run by the cppcompat CI job
 - `docs/` — the full treatment of reading untrusted data; the README keeps a
   condensed version that links here
+- `STANDARD.md`, `conformance/` — vendored verbatim from mas-bandwidth/serialize, kept
+  honest by the spec-sync and corpus-sync CI jobs; `conformance_test.go` runs the corpus
+- `terminal_test.go` — the terminal-failure latch, one case per failure shape
+- `degenerate_test.go` — the zero-bit degenerate range on every width
 
 ## Commands
 
@@ -120,7 +141,8 @@ published only under serialize.go.
 Push/PR, plus a weekly scheduled run: test matrix (3 OSes on stable Go plus an
 ubuntu leg on the go.mod minimum; race + shuffle + full), lint
 (golangci-lint — version pinned in ci.yml, bump deliberately — + modernize +
-`go mod tidy -diff`), vuln (govulncheck), cross (linux/386 full tests — 32 bit
+`go mod tidy -diff`), spec-sync and corpus-sync (STANDARD.md and conformance/ against
+upstream main), vuln (govulncheck), cross (linux/386 full tests — 32 bit
 `int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 build
 checks), cppcompat (Go ↔ C++ byte-identical round trip against the pinned C++
 serialize.h), coverage (func table in the job summary), fuzz (30s per target on

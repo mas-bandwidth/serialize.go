@@ -2,6 +2,8 @@
 
 Packets come from the network and can be truncated or maliciously crafted. Every read is bounds checked and range validated, and the first failure latches an error on the stream: from then on every serialize call is a no-op that returns the same error and **leaves values unmodified**.
 
+A failure is terminal, as the wire format requires: nothing after a failed read has a defined position, so nothing after it is interpretable. Only `Reset` — pointing the stream at a new buffer — clears the latch. The one value a refused read does not promise to leave alone is a caller-owned byte slice passed to `SerializeBytes`: treat its contents as unspecified after a failure.
+
 That last property implies one rule that the C++ library enforces invisibly (its serialize macros `return false` out of the enclosing function on the first failure) but that Go, having no macros, leaves to you:
 
 **A value that controls how much more work your serialize function does — a loop count or a continuation bit — must have its error checked before you use it.**

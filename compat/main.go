@@ -89,7 +89,7 @@ func initCompatData() compatData {
 		// (A: code 8388610 over max 8388609) or to a code one bit wider than the field
 		// (B: code 2^24 in a 24 bit field). Until these rows existed the clamp was proven
 		// inside each language and nowhere across the boundary (serialize#94): the gate
-		// stayed green against the pre-clamp v1.11.0 reference because no compat value
+		// stayed green against the pre-clamp v1.11.0 C++ library because no compat value
 		// exercised the band. With them, an unclamped side fails the byte-identity cmp.
 		clampRejectWitness: 8388609.0,  // witness A: top of [0, 8388609] res 1 (2^23+1 steps)
 		clampWideWitness:   16777215.0, // witness B: top of [0, 16777215] res 1 (2^24-1 steps)

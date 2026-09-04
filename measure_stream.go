@@ -249,9 +249,13 @@ func (s *MeasureStream) SerializeObject(object Serializer) error {
 }
 
 // SerializeIntRelative measures the encoding of *current relative to previous, exactly
-// as SerializeIntRelative on a write stream would encode it. previous must be less than
-// *current or ErrValueOutOfRange is returned.
+// as SerializeIntRelative on a write stream would encode it, and refuses the same
+// parameters: previous outside the int_relative domain panics, previous not less than
+// *current returns ErrValueOutOfRange.
 func (s *MeasureStream) SerializeIntRelative(previous int32, current *int32) error {
+	if previous < intRelativeMin {
+		panic(panicIntRelativeDomain)
+	}
 	if s.err != nil {
 		return s.err
 	}

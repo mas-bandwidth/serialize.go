@@ -147,6 +147,10 @@ func TestZigZag(t *testing.T) {
 
 const maxItems = 11
 
+// intRelativeTestBase is the previous value testObject serializes intRelative against.
+// It matches the value testObject.init gives o.data.a, so the wire is unchanged.
+const intRelativeTestBase = 1
+
 type testContext struct {
 	min, max int32
 }
@@ -247,7 +251,9 @@ func (o *testObject) Serialize(stream Stream) error {
 	stream.SerializeUint32(&o.data.uint32Value)
 	stream.SerializeUint64(&o.data.uint64Value)
 
-	stream.SerializeIntRelative(o.data.a, &o.data.intRelative)
+	// the base is a constant, not the wire-read o.data.a: previous belongs to the
+	// int_relative domain and a value that came off the wire carries no such promise
+	stream.SerializeIntRelative(intRelativeTestBase, &o.data.intRelative)
 
 	stream.SerializeInt64(&o.data.int64Full, math.MinInt64, math.MaxInt64)
 	stream.SerializeInt64(&o.data.int64Range, -5000000000, +5000000000)
@@ -693,20 +699,21 @@ func TestIntRelativeValidation(t *testing.T) {
 		}
 	}
 
-	// gaps wider than 2^31 overflow if the difference is computed in signed arithmetic
+	// the widest gap the domain allows: 0 to 2^31 - 1 takes the absolute tier and must
+	// round trip exactly
 	{
 		buffer := make([]byte, 8)
 
 		writeStream := NewWriteStream(buffer)
 		written := int32(math.MaxInt32)
-		if err := writeStream.SerializeIntRelative(-1000, &written); err != nil {
+		if err := writeStream.SerializeIntRelative(0, &written); err != nil {
 			t.Fatal(err)
 		}
 		writeStream.Flush()
 
 		readStream := NewReadStream(buffer)
 		var current int32
-		if err := readStream.SerializeIntRelative(-1000, &current); err != nil {
+		if err := readStream.SerializeIntRelative(0, &current); err != nil {
 			t.Fatal(err)
 		}
 		if current != written {
@@ -714,10 +721,13 @@ func TestIntRelativeValidation(t *testing.T) {
 		}
 	}
 
-	// read side reconstructs current = previous + difference; a large previous must wrap
-	// in the unsigned domain rather than overflow
+	// STANDARD.md int_relative: the reconstruction is checked in EVERY tier against the
+	// domain, 0 to 2^31 - 1. A previous at the top of the domain leaves no room for any
+	// difference, so every tier must refuse and leave the destination unwritten. Until
+	// 2026-09-04 this library reconstructed in the unsigned domain and wrapped, handing
+	// the caller a negative sequence number the stream never carried.
 	{
-		differences := []int32{1, 5} // 1 exercises the one bit branch, 5 exercises a bucket branch
+		differences := []int32{1, 5, 10, 100, 1000, 10000} // one per tier below the absolute one
 
 		for _, difference := range differences {
 			buffer := make([]byte, 8)
@@ -730,14 +740,32 @@ func TestIntRelativeValidation(t *testing.T) {
 			writeStream.Flush()
 
 			readStream := NewReadStream(buffer)
-			var current int32
-			if err := readStream.SerializeIntRelative(math.MaxInt32, &current); err != nil {
-				t.Fatal(err)
+			current := int32(-1)
+			if err := readStream.SerializeIntRelative(math.MaxInt32, &current); !errors.Is(err, ErrValueOutOfRange) {
+				t.Fatalf("difference %d past the domain top: expected ErrValueOutOfRange, got %v", difference, err)
 			}
-			expected := int32(uint32(math.MaxInt32) + uint32(difference))
-			if current != expected {
-				t.Fatalf("expected %d, got %d", expected, current)
+			if current != -1 {
+				t.Fatalf("difference %d past the domain top: refused read wrote %d", difference, current)
 			}
+		}
+	}
+
+	// a previous outside the domain is the caller's own state gone wrong, never packet
+	// data, so it is API misuse on every stream
+	{
+		for name, call := range map[string]func(){
+			"read":    func() { var v int32; NewReadStream(make([]byte, 8)).SerializeIntRelative(-1, &v) },
+			"write":   func() { v := int32(5); NewWriteStream(make([]byte, 8)).SerializeIntRelative(-1, &v) },
+			"measure": func() { v := int32(5); NewMeasureStream().SerializeIntRelative(-1, &v) },
+		} {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatalf("%s stream accepted a previous outside the int_relative domain", name)
+					}
+				}()
+				call()
+			}()
 		}
 	}
 }
