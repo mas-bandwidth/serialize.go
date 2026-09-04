@@ -8,7 +8,7 @@ If this library helps you, please support it: **[Become a supporter](https://www
 
 It is a pure Go port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library, with no native code. The two libraries produce bit-for-bit identical output, so streams written by one language can be read by the other. This is pinned down by a golden wire format test whose bytes are copied verbatim from the C++ test suite.
 
-The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbatim from the [serialize](https://github.com/mas-bandwidth/serialize) repository along with the shared conformance corpus in [conformance/](conformance); CI fails if either copy drifts from upstream. **This library implements format version 1.1.** Every vector in the corpus runs through the read stream in `TestConformanceCorpus`.
+The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbatim from the [serialize](https://github.com/mas-bandwidth/serialize) repository along with the shared conformance corpus in [conformance/](conformance); CI fails if either copy drifts from upstream. **This library implements format version 1.1.** Every vector in the corpus runs through the read stream in `TestConformanceCorpus`, which discovers the directory rather than naming its files: a vector whose operation it cannot drive fails the run. Vectors marked `writer = canonical` are re-emitted through the write stream and compared byte for byte, and vectors carrying `measure_at_least` are checked against the measure stream's floor.
 
 It has the following features:
 

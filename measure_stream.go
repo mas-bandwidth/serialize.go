@@ -222,10 +222,11 @@ func (s *MeasureStream) SerializeWideString(value *string, bufferSize int) error
 	if s.err != nil {
 		return s.err
 	}
-	length := int32(utf16Length(*value))
-	if length >= int32(bufferSize) {
+	units := utf16Length(*value)
+	if !wideStringFits(units, bufferSize) {
 		return s.fail(ErrValueOutOfRange)
 	}
+	length := int32(units)
 	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
 		return err
 	}

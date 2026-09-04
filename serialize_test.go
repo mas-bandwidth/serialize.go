@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -2027,6 +2028,42 @@ func TestReadBits64MatchesSplitReads(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestWideStringLengthValidatedBeforeNarrowing pins the order of the wstring write side
+// check. The length is compared against the buffer size at the caller's own int width, and
+// only then narrows to the int32 the length field carries: a check placed after the
+// narrowing is handed a length the narrowing already made legal, so a string of 2^32 + 5
+// code units arrives as 5 and fits any buffer.
+//
+// Each out of range case carries its negative control, a length one step inside the
+// buffer, which must fit.
+func TestWideStringLengthValidatedBeforeNarrowing(t *testing.T) {
+	const bufferSize = 8
+
+	if !wideStringFits(bufferSize-1, bufferSize) {
+		t.Fatalf("a length of %d must fit a buffer of %d: it leaves room for the terminator",
+			bufferSize-1, bufferSize)
+	}
+	if wideStringFits(bufferSize, bufferSize) {
+		t.Fatalf("a length of %d must not fit a buffer of %d: the terminator has nowhere to go",
+			bufferSize, bufferSize)
+	}
+
+	// the lengths whose low 32 bits are in range while the value is not. int is 32 bits on
+	// a 32 bit platform, where utf16Length cannot return them and there is nothing to
+	// narrow.
+	if strconv.IntSize < 64 {
+		return
+	}
+	one := int64(1)
+	for _, wide := range []int64{one << 31, one<<32 + 5, one<<32 + bufferSize - 1} {
+		length := int(wide)
+		if wideStringFits(length, bufferSize) {
+			t.Fatalf("a length of %d must not fit a buffer of %d: the low 32 bits are in range and the value is not",
+				length, bufferSize)
 		}
 	}
 }
