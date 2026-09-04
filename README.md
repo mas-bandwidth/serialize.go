@@ -25,10 +25,14 @@ It has the following features:
 
 # Usage
 
+The module is published on the Go module proxy under its import path — the
+current release is **v1.15.0**:
+
 ```
-go get github.com/mas-bandwidth/serialize.go
+go get github.com/mas-bandwidth/serialize.go@v1.15.0
 ```
 
+Or `go get github.com/mas-bandwidth/serialize.go` for the newest release.
 The package name is `serialize`, so no import alias is needed:
 
 ```go
