@@ -8,17 +8,19 @@ If this library helps you, please support it: **[Become a supporter](https://www
 
 It is a pure Go port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library, with no native code. The two libraries produce bit-for-bit identical output, so streams written by one language can be read by the other. This is pinned down by a golden wire format test whose bytes are copied verbatim from the C++ test suite.
 
+The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbatim from the [serialize](https://github.com/mas-bandwidth/serialize) repository along with the shared conformance corpus in [conformance/](conformance); CI fails if either copy drifts from upstream. **This library implements format version 1.1.** Every vector in the corpus runs through the read stream in `TestConformanceCorpus`.
+
 It has the following features:
 
 * Serialize a bool with only one bit
 * Serialize any integer value from [1,64] bits writing only that number of bits to the buffer
 * Serialize signed integer values with [min,max] writing only the required bits to the buffer
-* Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer
+* Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative to another integer, in the non-negative `int32` domain
 * Serialize fixed point values with a Q format and [min,max] bounds in whole units, writing only the required bits — round trips are exact, unlike compressed floats. Wide formats like Q112.16 work via the 128 bit pair
 * Serialize 128 bit integers: `Uint128` raw at a full 128 bits, `Int128` ranged in only the bits its range needs — and where that range fits 64 bits the bytes are identical to `SerializeInt64`
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
-* Zero allocations on every serialization path
+* Zero allocations on every serialization path, except the read paths that construct a string: `SerializeString` and `SerializeWideString` allocate the value they hand back when its content changed
 * Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking
 
 # Usage
@@ -128,6 +130,8 @@ If you want separate read and write functions instead of unified ones, use the c
 
 Packets come from the network and can be truncated or maliciously crafted. Every read is bounds checked and range validated, and the first failure latches an error on the stream: from then on every serialize call is a no-op that returns the same error and **leaves values unmodified**.
 
+A failure is terminal, as the wire format requires: nothing after a failed read has a defined position, so nothing after it is interpretable. Only `Reset` — pointing the stream at a new buffer — clears the latch. The one value a refused read does not promise to leave alone is a caller-owned byte slice passed to `SerializeBytes`: treat its contents as unspecified after a failure.
+
 That last property implies one rule: **a value that controls how much more work your serialize function does — a loop count or a continuation bit — must have its error checked before you use it.** A loop that waits for a serialized value to change will wait forever on a truncated packet, because failed reads never update values. That is a denial of service vector.
 
 For sentinel-driven loops, use `serialize.Continue` (a true bit before each element) or `serialize.Until` (a true bit terminating the sequence), which fold the stream error state into the loop condition in the style of `bufio.Scanner`:
@@ -159,13 +163,14 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 # Performance
 
-All serialization paths are zero allocation. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
+All serialization paths are zero allocation, with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing, and `SerializeWideString` allocates per read because it decodes UTF-16 groups into a Go string. Everything else — every integer, float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 # Limitations
 
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment.
 * Read buffers may be any number of bytes. For the fastest reads, keep at least 12 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and uses fully branchless window loads; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted.
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
+* `SerializeIntRelative` works in the `int_relative` domain, 0 to 2147483647 (STANDARD.md). `previous` is your own state and never arrives off the wire, so a negative `previous` is API misuse and panics. On read the reconstruction is checked in every tier: a value that leaves the domain, or that does not exceed `previous`, fails with `ErrValueOutOfRange` and leaves the destination unwritten.
 * `SerializeWideString` stores 32 bits per UTF-16 code unit and is wire compatible with `serialize_wstring` in the C++ library: astral code points are split into surrogate pairs on write and recombined on read, so every platform produces identical bytes (STANDARD.md). Groups that are not UTF-16 code units (values above 0xFFFF) and unpaired surrogates fail on read.
 
 # Author

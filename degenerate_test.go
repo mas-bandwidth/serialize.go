@@ -106,6 +106,68 @@ func TestDegenerateRange64(t *testing.T) {
 	}
 }
 
+// ...and on the 128 bit width, where the corpus pins it: conformance/int128.txt,
+// vector degenerate-range-zero-bits. The corpus runs that vector through the reader
+// (TestConformanceCorpus); this is its regression twin on the other two streams, which
+// the corpus cannot reach — the write must emit nothing and the measure must add zero,
+// or the reader's zero bits are the only half of the contract this port keeps.
+//
+// The value is the corpus's, 2^100 + 7: wide enough that a lane the code forgot to
+// carry shows up, and unrepresentable in 64 bits, so no accidental narrowing passes.
+func TestDegenerateRangeInt128(t *testing.T) {
+	// 2^100 + 7, the value in conformance/int128.txt
+	unit := Int128{Hi: 1 << 36, Lo: 7}
+
+	buffer := make([]byte, 64)
+
+	w := NewWriteStream(buffer)
+	v := unit
+	if err := w.SerializeInt128(&v, unit, unit); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := w.BitsProcessed(); got != 0 {
+		t.Errorf("degenerate int128 wrote %d bits, want 0", got)
+	}
+	// the next field must start at bit 0: if the degenerate one took bit space,
+	// everything downstream shifts and the wire stops matching the other ports
+	after := int32(3)
+	if err := w.SerializeInt(&after, 0, 7); err != nil {
+		t.Fatalf("write after: %v", err)
+	}
+	if got := w.BitsProcessed(); got != 3 {
+		t.Errorf("after the degenerate int128 the stream is at %d bits, want 3", got)
+	}
+	w.Flush()
+
+	r := NewReadStream(buffer[:w.BytesProcessed()])
+	var out Int128
+	if err := r.SerializeInt128(&out, unit, unit); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if out != unit {
+		t.Errorf("degenerate int128 read back %+v, want %+v (recovered from the range)", out, unit)
+	}
+	if got := r.BitsProcessed(); got != 0 {
+		t.Errorf("degenerate int128 read %d bits, want 0", got)
+	}
+	var readAfter int32
+	if err := r.SerializeInt(&readAfter, 0, 7); err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if readAfter != 3 {
+		t.Errorf("after read back %d, want 3", readAfter)
+	}
+
+	m := NewMeasureStream()
+	measured := unit
+	if err := m.SerializeInt128(&measured, unit, unit); err != nil {
+		t.Fatalf("measure: %v", err)
+	}
+	if got := m.BitsProcessed(); got != 0 {
+		t.Errorf("measure says the degenerate int128 costs %d bits, want 0", got)
+	}
+}
+
 // A degenerate FIXED range costs zero bits too, on the narrow path. The raw
 // value is min << fractionBits, recovered from the range alone.
 func TestDegenerateRangeFixed64(t *testing.T) {

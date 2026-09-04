@@ -19,7 +19,7 @@
 //   - Serialize any integer value from [1,64] bits writing only that number of bits to the buffer
 //   - Serialize signed integer values in [min,max] writing only the required bits to the buffer
 //   - Serialize floats, doubles, compressed floats, strings, byte arrays, and integers relative
-//     to another integer
+//     to another integer, in the non-negative int32 domain
 //   - Serialize fixed point values with a Q format and [min,max] bounds in whole units, writing
 //     only the required bits, with exact round trips — including wide formats like Q112.16 via
 //     the 128 bit pair
@@ -32,8 +32,13 @@
 // The bit stream is written to memory in little endian order, which is considered network
 // byte order for this library.
 //
+// The wire format is specified in STANDARD.md, vendored verbatim from the C++ repository
+// along with the shared conformance corpus in conformance/. This package implements format
+// version 1.1.
+//
 // Values read from a stream are untrusted network data: every read is bounds checked and
-// range validated, and the first failure latches an error on the stream. Serialize methods
+// range validated, and the first failure latches an error on the stream. The failure is
+// terminal, as the format requires, and only ReadStream.Reset clears it. Serialize methods
 // return that error and become no-ops once it is set, so you can either check each call or
 // serialize an entire object and check Stream.Err once at the end — with one rule: a value
 // that controls a loop must have its error checked before the loop uses it, because after
@@ -64,18 +69,19 @@ var (
 // Panic messages for API misuse. These indicate programmer error, never bad packet data,
 // so they panic like the debug asserts in the C++ library rather than returning an error.
 const (
-	panicBitsRange        = "serialize: bits must be in [1,32]"
-	panicBitsRange64      = "serialize: bits must be in [1,64]"
-	panicMinMax           = "serialize: min must not be greater than max"
-	panicFixedParams      = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
-	panicFixedBounds      = "serialize: fixed point bounds in whole units do not fit the Q format"
-	panicBufferSize       = "serialize: string buffer size must be in [1,1<<31)"
-	panicFloatParams      = "serialize: compressed float requires min < max and resolution > 0"
-	panicPrecomputedFloat = "serialize: precomputed compressed float constants must be exactly what CompressedFloatParams derives"
-	panicWriteOverflow    = "serialize: bit writer overflow"
-	panicReadOverflow     = "serialize: bit reader would read past the end of the buffer"
-	panicNotAligned       = "serialize: byte array serialization requires byte alignment"
-	panicBufferBytes      = "serialize: bit writer buffer size must be a multiple of 8 bytes"
+	panicBitsRange         = "serialize: bits must be in [1,32]"
+	panicBitsRange64       = "serialize: bits must be in [1,64]"
+	panicMinMax            = "serialize: min must not be greater than max"
+	panicIntRelativeDomain = "serialize: int relative previous must be in [0,2147483647]"
+	panicFixedParams       = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
+	panicFixedBounds       = "serialize: fixed point bounds in whole units do not fit the Q format"
+	panicBufferSize        = "serialize: string buffer size must be in [1,1<<31)"
+	panicFloatParams       = "serialize: compressed float requires min < max and resolution > 0"
+	panicPrecomputedFloat  = "serialize: precomputed compressed float constants must be exactly what CompressedFloatParams derives"
+	panicWriteOverflow     = "serialize: bit writer overflow"
+	panicReadOverflow      = "serialize: bit reader would read past the end of the buffer"
+	panicNotAligned        = "serialize: byte array serialization requires byte alignment"
+	panicBufferBytes       = "serialize: bit writer buffer size must be a multiple of 8 bytes"
 )
 
 // BitsRequired returns the number of bits required to serialize an integer in range [min,max].

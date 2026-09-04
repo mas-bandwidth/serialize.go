@@ -372,6 +372,10 @@ func (s *ReadStream) compressedFloat32Precomputed(value *float32, maxIntegerValu
 
 // SerializeBytes aligns the stream to a byte boundary and block copies len(data) bytes
 // into data.
+//
+// data is a caller-owned buffer, the one destination a refused read makes no promise
+// about: treat its contents as unspecified after a failure (STANDARD.md, Reader
+// Obligations). The scalar reads on this stream do promise non-mutation.
 func (s *ReadStream) SerializeBytes(data []byte) error {
 	if err := s.SerializeAlign(); err != nil {
 		return err
@@ -523,11 +527,20 @@ func (s *ReadStream) SerializeObject(object Serializer) error {
 	return s.err
 }
 
-// SerializeIntRelative reads *current relative to previous. The value is reconstructed
-// in the unsigned domain, so it wraps rather than overflowing when previous is near the
-// top of the int32 range. The absolute fallback encoding validates that the decoded
-// value is greater than previous.
+// SerializeIntRelative reads *current relative to previous. previous is the caller's own
+// state and never arrives off the wire, so a previous outside the int_relative domain is
+// API misuse and panics.
+//
+// Every tier's reconstruction is checked (STANDARD.md int_relative): the value is rebuilt
+// in int64, which cannot wrap, and the read fails with ErrValueOutOfRange unless the
+// result lies in the domain and is strictly greater than previous. That binds in the one
+// bit tier, in each of the five bucket tiers and in the absolute tier, whose 32 raw bits
+// are read unsigned — a group with the top bit set is above the domain and is refused,
+// rather than reappearing as a negative value. On failure *current is left unmodified.
 func (s *ReadStream) SerializeIntRelative(previous int32, current *int32) error {
+	if previous < intRelativeMin {
+		panic(panicIntRelativeDomain)
+	}
 	if s.err != nil {
 		return s.err
 	}
@@ -536,8 +549,7 @@ func (s *ReadStream) SerializeIntRelative(previous int32, current *int32) error 
 		return err
 	}
 	if flag {
-		*current = int32(uint32(previous) + 1)
-		return nil
+		return s.intRelativeResult(previous, int64(previous)+1, current)
 	}
 	for _, bucket := range intRelativeBuckets {
 		if err := s.SerializeBool(&flag); err != nil {
@@ -548,18 +560,26 @@ func (s *ReadStream) SerializeIntRelative(previous int32, current *int32) error 
 			if err := s.SerializeInt(&difference, int32(bucket.min), int32(bucket.max)); err != nil {
 				return err
 			}
-			*current = int32(uint32(previous) + uint32(difference))
-			return nil
+			return s.intRelativeResult(previous, int64(previous)+int64(difference), current)
 		}
 	}
 	var v uint32
 	if err := s.readBits(&v, 32); err != nil {
 		return err
 	}
-	if int32(v) <= previous {
+	// the absolute tier's group is unsigned: widening it to int64 keeps a top bit set
+	// group above the domain, where the check below refuses it
+	return s.intRelativeResult(previous, int64(v), current)
+}
+
+// intRelativeResult checks a reconstructed int_relative value against the domain and
+// against previous, and writes the caller's destination only once both hold. The
+// reconstruction arrives as an int64 so it cannot have wrapped on the way here.
+func (s *ReadStream) intRelativeResult(previous int32, reconstructed int64, current *int32) error {
+	if reconstructed > intRelativeMax || reconstructed <= int64(previous) {
 		return s.fail(ErrValueOutOfRange)
 	}
-	*current = int32(v)
+	*current = int32(reconstructed)
 	return nil
 }
 

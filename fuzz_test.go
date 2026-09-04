@@ -31,7 +31,7 @@ func FuzzReadStream(f *testing.F) {
 		var i64 int64
 		_ = stream.SerializeInt64(&i64, math.MinInt64, math.MaxInt64)
 		var relative int32
-		_ = stream.SerializeIntRelative(-10, &relative)
+		_ = stream.SerializeIntRelative(100, &relative)
 		var str string
 		_ = stream.SerializeString(&str, 300)
 		var wstr string

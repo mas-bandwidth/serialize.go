@@ -385,7 +385,7 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 	// bytes. Do not "simplify" this.
 	integerValue := uint32(math.Floor(float64(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)))
 	// STANDARD.md: the integer clamp is normative (2026-08-23, schema#109; the C++
-	// reference merged it in mas-bandwidth/serialize#88). Once maxIntegerValue >= 2^23
+	// C++ implementation merged it in mas-bandwidth/serialize#88). Once maxIntegerValue >= 2^23
 	// the float32 ulp at the top of the range reaches 1, so the rounded sum can exceed
 	// maxIntegerValue itself: the writer emits a code its own reader rejects, or one
 	// bit wider than the field. Clamping after the floor closes both and changes no
@@ -534,10 +534,14 @@ func (s *WriteStream) SerializeObject(object Serializer) error {
 }
 
 // SerializeIntRelative writes *current relative to previous, using fewer bits the closer
-// the two values are. previous must be less than *current or ErrValueOutOfRange is
-// returned. The difference is computed in the unsigned domain, so gaps wider than 2^31
-// wrap and fall through to the absolute 32 bit encoding.
+// the two values are. Both values live in the int_relative domain, 0 to 2147483647
+// (STANDARD.md int_relative): previous outside it is API misuse and panics, and previous
+// not less than *current returns ErrValueOutOfRange, which leaves *current in the domain
+// on every write this method performs.
 func (s *WriteStream) SerializeIntRelative(previous int32, current *int32) error {
+	if previous < intRelativeMin {
+		panic(panicIntRelativeDomain)
+	}
 	if s.err != nil {
 		return s.err
 	}

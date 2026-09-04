@@ -13,9 +13,11 @@ import "math"
 //
 // Errors are sticky: the first failure latches on the stream and every later serialize
 // call returns it without touching the stream, so you can either check every call or
-// serialize a whole object and check Err once at the end. The one rule: a value that
-// controls a loop must have its error checked before the loop runs, because after an
-// error the value is never updated again. See Continue and the Serializer documentation.
+// serialize a whole object and check Err once at the end. A failure is terminal, which
+// is what the wire format requires of a reader, and only ReadStream.Reset clears it. The
+// one rule: a value that controls a loop must have its error checked before the loop
+// runs, because after an error the value is never updated again. See Continue and the
+// Serializer documentation.
 type Stream interface {
 	// IsWriting returns true if the stream writes or measures values (WriteStream and
 	// MeasureStream), and false if it reads them.
@@ -105,7 +107,7 @@ type Stream interface {
 	// it directly, and a unified function that wants it can declare its own one method
 	// interface over the signature. Adding a method to a published Go interface breaks
 	// every outside implementer of it, which would make an additive change a major
-	// version event; the C++ reference pays no such cost because its stream parameter
+	// version event; the C++ implementation pays no such cost because its stream parameter
 	// is a template, not an interface. See CompressedFloatParams.
 
 	// SerializeBytes serializes an array of bytes. The stream aligns to a byte boundary
@@ -139,7 +141,9 @@ type Stream interface {
 	SerializeObject(object Serializer) error
 
 	// SerializeIntRelative serializes an integer relative to a previous integer, using
-	// fewer bits the closer the two values are. previous must be less than current.
+	// fewer bits the closer the two values are. Both values live in the int_relative
+	// domain, 0 to 2147483647: previous outside it is API misuse and panics, and a read
+	// that reconstructs a current outside it, or one not greater than previous, fails.
 	SerializeIntRelative(previous int32, current *int32) error
 
 	// AlignBits returns the number of bits required to align the stream to the next byte
@@ -240,6 +244,14 @@ var (
 	_ Stream = (*WriteStream)(nil)
 	_ Stream = (*ReadStream)(nil)
 	_ Stream = (*MeasureStream)(nil)
+)
+
+// The int_relative domain is the non-negative int32 range (STANDARD.md int_relative).
+// Both previous and current lie in it: previous is the caller's own state, checked as
+// API misuse, and current is checked against the domain on every read in every tier.
+const (
+	intRelativeMin = 0
+	intRelativeMax = math.MaxInt32
 )
 
 // intRelativeBuckets are the difference buckets used by SerializeIntRelative. Each bucket

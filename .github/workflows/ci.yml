@@ -239,3 +239,28 @@ jobs:
             exit 1
           fi
           echo "STANDARD.md matches upstream"
+
+  corpus-sync:
+    name: conformance/ matches upstream
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      # conformance/ here is a VERBATIM VENDORED COPY of the shared conformance
+      # corpus that lives in mas-bandwidth/serialize, one file per operation. It is
+      # vendored and checked for the same reasons STANDARD.md is, and the corpus is
+      # the instrument the standard names: TestConformanceCorpus runs every vector
+      # in it through this port's reader. A checker that regenerates its own
+      # expectations proves only that a port agrees with itself.
+      #
+      # If this fails, the upstream corpus changed. Read the diff, make the reader
+      # pass the new vectors, then copy the directory across in the same commit.
+      - name: Compare against mas-bandwidth/serialize
+        run: |
+          git clone --depth 1 --quiet https://github.com/mas-bandwidth/serialize.git /tmp/upstream-serialize
+          echo "upstream: mas-bandwidth/serialize@$(git -C /tmp/upstream-serialize rev-parse HEAD)"
+          if ! diff -ru /tmp/upstream-serialize/conformance conformance; then
+            echo "::error::conformance/ has diverged from mas-bandwidth/serialize"
+            exit 1
+          fi
+          echo "conformance/ matches upstream"
