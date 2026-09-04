@@ -133,7 +133,7 @@ jobs:
       # Every release since v1.6.2 keeps the degenerate range (min == max) round
       # trippable.
       - name: download the pinned C++ serialize.h
-        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.16.0/serialize.h
+        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.16.2/serialize.h
       # asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse panics",
       # and the degenerate range must pass with them enabled, not around them.
       - name: build the C++ harness

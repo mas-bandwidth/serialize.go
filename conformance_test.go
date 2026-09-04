@@ -430,6 +430,26 @@ func stepFromWords(text string) (step, error) {
 		s.kind = stepAlign
 	case words[0] == "float" && len(words) == 1:
 		s.kind = stepFloat
+	case words[0] == "double" && len(words) == 1:
+		s.kind = stepDouble
+	case words[0] == "uint128" && len(words) == 1:
+		s.kind = stepUint128
+	case words[0] == "int_relative" && len(words) == 2:
+		previous, err := number(1)
+		if err != nil {
+			return s, err
+		}
+		s.kind, s.previous = stepIntRelative, int32(previous.Lo)
+	case words[0] == "compressed_float" && len(words) == 4:
+		var bounds [3]float32
+		for i := range bounds {
+			value, err := strconv.ParseFloat(words[i+1], 32)
+			if err != nil {
+				return s, fmt.Errorf("step %q: %q is not a float32: %w", text, words[i+1], err)
+			}
+			bounds[i] = float32(value)
+		}
+		s.kind, s.fmin, s.fmax, s.fres = stepCompressedFloat, bounds[0], bounds[1], bounds[2]
 	case words[0] == "bits" && len(words) == 2:
 		width, err := number(1)
 		if err != nil {
@@ -460,7 +480,7 @@ func stepFromWords(text string) (step, error) {
 			return s, err
 		}
 		s.kind, s.width = stepWideString, int64(width.Lo)
-	case words[0] == "int" && len(words) == 3:
+	case (words[0] == "int" || words[0] == "int64" || words[0] == "int128") && len(words) == 3:
 		min, err := number(1)
 		if err != nil {
 			return s, err
@@ -469,7 +489,15 @@ func stepFromWords(text string) (step, error) {
 		if err != nil {
 			return s, err
 		}
-		s.kind, s.min, s.max = stepInt, min, max
+		switch words[0] {
+		case "int":
+			s.kind = stepInt
+		case "int64":
+			s.kind = stepInt64
+		default:
+			s.kind = stepInt128
+		}
+		s.min, s.max = min, max
 	case words[0] == "fixed" && len(words) == 5:
 		integerBits, err := number(1)
 		if err != nil {
