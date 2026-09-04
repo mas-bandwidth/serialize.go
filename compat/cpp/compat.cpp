@@ -4,26 +4,26 @@
     PR: each side writes its stream to a file, the two files must be byte identical,
     and each side must read the other's file back to the exact values.
 
-    Download serialize.h (v1.11.0) from github.com/mas-bandwidth/serialize into this
+    Download serialize.h (v1.16.0) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.11.0/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.16.0/serialize.h
         c++ -O2 -std=c++17 -Wall -o compat compat.cpp
         ./compat write cpp.bin && ./compat read cpp.bin
 
-    The pin is v1.11.0. It must be at least v1.7.0, the C++ release whose writer
-    forces the intermediate rounding in compressed_float: the harness carries a
-    vector chosen to catch a contracted (FMA) quantization, and against v1.6.2 the
-    check is circular on arm64 — clang contracts v1.6.2's writer at -O2 exactly
-    like a broken Go writer, both halves write the same wrong byte, and the gate
-    passes buggy-against-buggy. It must be at least v1.11.0 for the reason it now
-    sits there: v1.11.0 is the first release carrying
-    serialize_compressed_float_precomputed, and this harness drives it. The older
-    requirement still holds too: the degenerate range (min == max) must not abort,
-    which every release since v1.6.2 guarantees. Build with asserts ON — they are
-    the C++ half of "API misuse panics", and stripping them with -DNDEBUG would
-    hide the divergence this harness exists to catch, including the precomputed
-    entry point's own constants check.
+    The pin is v1.16.0, the same release ci.yml downloads, and it never moves
+    backwards past the floors underneath it. It must be at least v1.7.0, the C++
+    release whose writer forces the intermediate rounding in compressed_float: the
+    harness carries a vector chosen to catch a contracted (FMA) quantization, and
+    against v1.6.2 the check is circular on arm64 — clang contracts v1.6.2's writer
+    at -O2 exactly like a broken Go writer, both halves write the same wrong byte,
+    and the gate passes buggy-against-buggy. It must be at least v1.11.0, the first
+    release carrying serialize_compressed_float_precomputed, which this harness
+    drives. The older requirement still holds too: the degenerate range
+    (min == max) must not abort, which every release since v1.6.2 guarantees.
+    Build with asserts ON — they are the C++ half of "API misuse panics", and
+    stripping them with -DNDEBUG would hide the divergence this harness exists to
+    catch, including the precomputed entry point's own constants check.
 
     The two entry points cross in OPPOSITE DIRECTIONS on purpose, and neither
     crossing proves what the other does. compressedFloatHalf rides the PRECOMPUTED
