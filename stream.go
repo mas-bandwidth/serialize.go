@@ -348,6 +348,18 @@ func utf16Length(value string) int {
 	return length
 }
 
+// wideStringFits reports whether a wide string of length UTF-16 code units fits a wstring
+// field declared with the given buffer size, which must leave room for the terminator the
+// wire does not carry.
+//
+// The comparison runs at the caller's own int width, before the length narrows to the
+// int32 the length field is written in. A comparison placed after the narrowing is handed
+// a length the narrowing already made legal: a string of 2^32 + 5 code units arrives as 5,
+// which fits any buffer, and the check that exists to refuse it cannot see it.
+func wideStringFits(length, bufferSize int) bool {
+	return length < bufferSize
+}
+
 // fixedPointCapacity returns the whole unit bounds a Q format with the given number
 // of integer bits can represent, clamped to the int64 domain the bounds live in. The
 // signedness of the format follows the bounds: a format with a negative min is
