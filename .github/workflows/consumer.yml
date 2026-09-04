@@ -1,0 +1,215 @@
+# The consumer path: the library as an outside user actually gets it.
+#
+# Every other job in this repository builds the working tree. That proves the
+# code is right and proves nothing about distribution, which is the thing a
+# consumer depends on. A module can be tagged and never reach the proxy, reach
+# the proxy without the specification beside it, or sit at a version behind the
+# newest tag while every in-repo check stays green.
+#
+# So this job never touches the working tree as a library. It builds a fresh
+# module in a temporary directory outside the checkout, resolves this module
+# from the Go module proxy at the exact published version, encodes a
+# three-field message, decodes it, and checks the bytes against a literal
+# written here rather than recomputed by the code under test.
+#
+# The byte literal is the family's, not this port's: the same three values
+# encode to the same four bytes in every implementation, so a change here is a
+# wire change and belongs in STANDARD.md first.
+name: consumer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  schedule:
+    # nightly, because the proxy can move without a push to this repository:
+    # a release published by hand shows up here the following morning
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  consumer:
+    name: consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # every v* tag: the version of a Go module is its tag, so the drift is
+          # measured against tags rather than against a version file
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Consume the published module
+        env:
+          # GOFLAGS is set explicitly so the consumer resolves through the
+          # public proxy exactly as an outside user does, with no fallback to
+          # the git remote that would hide an unpublished tag
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+          GOFLAGS: -mod=mod
+        run: |
+          set -u
+          status=0
+
+          module=$(sed -n 's/^module \(.*\)/\1/p' go.mod | head -1)
+          if [ -z "$module" ]; then
+            echo "::error::could not read the module path out of go.mod"
+            exit 1
+          fi
+
+          # the repository's version is its newest release tag: Go carries no
+          # version file, so the tag is the only thing that names a release
+          repo=$(git tag --list 'v*' --sort=v:refname | tail -n1)
+          published=$(curl -fsS "https://proxy.golang.org/$module/@latest" | sed -n 's/.*"Version":"\([^"]*\)".*/\1/p')
+
+          echo "module:     $module"
+          echo "repository: ${repo:-none}"
+          echo "proxy:      ${published:-none}"
+
+          if [ -z "$published" ]; then
+            echo "::error::the Go module proxy holds no version of $module. Nothing to consume"
+            exit 1
+          fi
+
+          # a fresh consumer, outside the checkout, resolving from the index
+          consumer="$RUNNER_TEMP/consumer"
+          rm -rf "$consumer"
+          mkdir -p "$consumer"
+          cd "$consumer"
+
+          cat > go.mod <<EOF
+          module consumer
+
+          go 1.23
+          EOF
+
+          cat > main.go <<EOF
+          package main
+
+          import (
+          	"fmt"
+          	"os"
+
+          	serialize "$module"
+          )
+
+          // three fields, one function, read and write from the same source
+          func message(s serialize.Stream, alive *bool, health *int32, sequence *uint16) error {
+          	if err := s.SerializeBool(alive); err != nil {
+          		return err
+          	}
+          	if err := s.SerializeInt(health, 0, 1000); err != nil {
+          		return err
+          	}
+          	return s.SerializeUint16(sequence)
+          }
+
+          func main() {
+          	// 1 bit + 10 bits + 16 bits = 27 bits, four bytes on the wire
+          	want := []byte{121, 149, 132, 0}
+
+          	buffer := make([]byte, 64)
+          	w := serialize.NewWriteStream(buffer)
+          	alive, health, sequence := true, int32(700), uint16(4242)
+          	if err := message(w, &alive, &health, &sequence); err != nil {
+          		fmt.Fprintln(os.Stderr, "write failed:", err)
+          		os.Exit(1)
+          	}
+          	w.Flush()
+          	got := w.Data()
+          	fmt.Printf("encoded %d bytes: %v\n", len(got), got)
+
+          	if len(got) != len(want) {
+          		fmt.Fprintf(os.Stderr, "wrong length: want %d bytes, got %d\n", len(want), len(got))
+          		os.Exit(1)
+          	}
+          	for i := range want {
+          		if got[i] != want[i] {
+          			fmt.Fprintf(os.Stderr, "wrong bytes: want %v, got %v\n", want, got)
+          			os.Exit(1)
+          		}
+          	}
+
+          	r := serialize.NewReadStream(got)
+          	var a bool
+          	var h int32
+          	var q uint16
+          	if err := message(r, &a, &h, &q); err != nil {
+          		fmt.Fprintln(os.Stderr, "read failed:", err)
+          		os.Exit(1)
+          	}
+          	if a != true || h != 700 || q != 4242 {
+          		fmt.Fprintf(os.Stderr, "wrong values: got %v %v %v\n", a, h, q)
+          		os.Exit(1)
+          	}
+          	fmt.Printf("decoded %v %v %v\n", a, h, q)
+          }
+          EOF
+
+          if ! go get "$module@$published"; then
+            echo "::error::go get $module@$published failed. The proxy does not serve the version it advertises"
+            exit 1
+          fi
+          if ! go run .; then
+            echo "::error::the consumer program failed against $module@$published"
+            status=1
+          fi
+
+          # the compatibility check, from the consumer's copy rather than this
+          # checkout: a published package that does not carry the format version
+          # of the release it claims to be cannot be checked by anyone who
+          # installs it
+          dir=$(go list -m -f '{{.Dir}}' "$module")
+          cd "$GITHUB_WORKSPACE"
+          format_version() {
+            v=$(sed -n 's/^\*\*The format version is \([0-9][0-9]*\.[0-9][0-9]*\)\.\*\*.*/\1/p' "$1" | head -1)
+            if [ -z "$v" ]; then
+              v=$(sed -n 's/^# serialize \([0-9][0-9]*\.[0-9][0-9]*\) *$/\1/p' "$1" | head -1)
+            fi
+            printf '%s' "$v"
+          }
+          if [ ! -f "$dir/STANDARD.md" ]; then
+            echo "::error::$module@$published ships no STANDARD.md. The specification must travel with the package"
+            status=1
+            package_format=""
+          else
+            package_format=$(format_version "$dir/STANDARD.md")
+          fi
+          repo_format=$(format_version STANDARD.md)
+          echo "format version: repository $repo_format, package ${package_format:-unknown}"
+          if [ -n "$package_format" ] && [ "$package_format" != "$repo_format" ]; then
+            echo "::error::format version mismatch: $module@$published carries format version $package_format and this repository carries $repo_format"
+            status=1
+          fi
+
+          {
+            echo "## Consumer path"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| module | \`$module\` |"
+            echo "| newest tag here | \`${repo:-none}\` |"
+            echo "| newest on the proxy | \`$published\` |"
+            echo "| format version here | \`$repo_format\` |"
+            echo "| format version in the package | \`${package_format:-unknown}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # the drift gate. A tag ahead of the proxy is a release that exists in
+          # this repository and nowhere a consumer can reach
+          if [ -n "$repo" ] && [ "$repo" != "$published" ] && \
+             [ "$(printf '%s\n%s\n' "${published#v}" "${repo#v}" | sort -V | tail -n1)" = "${repo#v}" ]; then
+            echo "::error::published version drift: this repository is tagged $repo and the Go module proxy holds $published. Publish $repo before the consumer path can be checked against it"
+            status=1
+          fi
+
+          exit "$status"
