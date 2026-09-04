@@ -25,14 +25,17 @@ It has the following features:
 
 # Usage
 
-The module is published on the Go module proxy under its import path — the
-current release is **v1.15.0**:
+The module is published on the Go module proxy under its import path, so it
+installs like any other Go dependency:
 
 ```
-go get github.com/mas-bandwidth/serialize.go@v1.15.0
+go get github.com/mas-bandwidth/serialize.go
 ```
 
-Or `go get github.com/mas-bandwidth/serialize.go` for the newest release.
+That resolves the newest release. Append `@` and a tag to pin a specific one.
+The `consumer` CI job builds a fresh module outside this repository, installs
+this one from the proxy, and round trips a message through it, so the install
+line above is checked on every push and every night rather than claimed.
 The package name is `serialize`, so no import alias is needed:
 
 ```go
