@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mas-bandwidth/serialize.go.svg)](https://pkg.go.dev/github.com/mas-bandwidth/serialize.go)
 
-If this library helps you, please support it: **[Become a supporter](https://www.patreon.com/MasBandwidth/membership)**
+![serialize.go logo with a packed row of colored blocks](images/serialize.png)
 
 **serialize.go** is a simple bitpacking serializer for Go.
 
@@ -22,6 +22,8 @@ It has the following features:
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
 * Zero allocations on every serialization path, except the read paths that construct a string: `SerializeString` and `SerializeWideString` allocate the value they hand back when its content changed
 * Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking
+
+If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
 # Usage
 
