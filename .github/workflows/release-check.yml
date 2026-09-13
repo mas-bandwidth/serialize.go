@@ -1,0 +1,104 @@
+# A TAG IS A CLAIM ABOUT SOURCE, AND NOTHING ELSE IN THIS REPOSITORY CHECKS IT.
+#
+# ci.yml runs on `push: branches: [main]`, on pull requests, on its nightly
+# schedule and on dispatch -- never on tags. That was harmless while the go.mod
+# floor leg ran on every commit to main: whatever commit you tagged, the floor
+# had already seen it. The two-tier split moved `test (ubuntu-latest, 1.23.x)`
+# to the nightly tier, and with it that guarantee. A tag cut the same day the
+# commit lands now ships from source the floor leg has not compiled, and the
+# gap closes only when the nightly happens to run.
+#
+# consumer.yml does run on `tags: ['v*']`, and it is not this check. It
+# resolves the module from the Go proxy at the published version and runs a
+# consumer program against it -- a claim about DISTRIBUTION, and one that can
+# only be made after a release is published, against whatever the proxy already
+# holds. This workflow makes the claim that has to be true before that: the
+# source carrying this tag builds, vets and passes its tests on the oldest Go
+# the module says it supports.
+#
+# Ubuntu only, and deliberately. The platform-specific coverage (arm64 FMA
+# contraction on macOS, the non-unix leg on windows) is about the machine the
+# code runs on, and ci.yml proved that on the commit. What a tag adds is a
+# claim about the LANGUAGE VERSION a consumer may hold us to, which is the
+# go.mod floor, and that is not platform-specific. No fuzz: fuzzing finds by
+# running longer, the nightly tier does that, and nothing here should stand
+# between a finished release and its tag for more than two minutes.
+#
+# RUN THIS BEFORE THE TAG, NOT AFTER IT. In Go the tag push IS the publish --
+# there is no separate step to withhold -- so the proxy may hold the version
+# the moment the tag lands, and it holds it forever. This workflow therefore
+# cannot gate a release; nothing triggered by a tag can. The intended order is:
+# `workflow_dispatch` on main at the release commit, green, THEN tag. The run
+# on the tag is the receipt that the tagged source is the source that passed,
+# and a red tag run does not mean "re-tag" -- it means the version may already
+# be spent and the fix is a new version, not a replacement of this one. That
+# new version also ships the RETRACTION of the spent one: a `retract` directive
+# in go.mod, which is the one thing that reaches a consumer who already
+# resolved the bad version. This repository has done it twice -- v1.0.0 for the
+# post-release renames, v1.8.0 for the arm64 compressed_float divergence -- and
+# both entries are still in go.mod, which is where to copy the form from.
+name: release check
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # a tag's ref is unique, so this only ever collides with a re-run of itself
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-check:
+    strategy:
+      fail-fast: false
+      matrix:
+        # THE FLOOR FIRST, because it is the leg that is not otherwise run on
+        # this commit, and `stable` beside it so a red floor leg can be read as
+        # "too new for 1.23" rather than "broken everywhere".
+        go: ["1.23.x", "stable"]
+    name: release-check (${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          # no go.sum in this module -- there are no dependencies -- so the
+          # key is go.mod and what it restores is the build cache
+          cache: true
+          cache-dependency-path: go.mod
+
+      # build before vet and test: `go build ./...` is what fails first and
+      # most legibly when source has reached for stdlib newer than the floor,
+      # and a release should not have to read a test failure to learn that.
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test (race, short)
+        run: go test -short -race -shuffle=on ./...
+      # the full suite, unshortened: it carries the 320MB large-buffer test
+      # that -short skips, and a release is exactly when that should run
+      - name: test (full)
+        run: go test -shuffle=on ./...
+
+      - name: what this tag proved
+        if: always()
+        run: |
+          {
+            echo "## release check: \`${{ github.ref_name }}\` on Go ${{ matrix.go }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| ref | \`${{ github.ref }}\` |"
+            echo "| commit | \`${{ github.sha }}\` |"
+            echo "| go.mod floor | \`$(sed -n 's/^go \(.*\)/\1/p' go.mod | head -1)\` |"
+            echo "| this leg | \`${{ matrix.go }}\` ($(go version | awk '{print $3}')) |"
+            echo "| result | \`${{ job.status }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
