@@ -23,7 +23,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A SCHEDULE RUN GETS ITS OWN GROUP, and that became load-bearing the moment
+  # the nightly tier got teeth. A schedule run's ref is refs/heads/main, which
+  # is the same group as a push to main; cancel-in-progress is PR-only, so a
+  # push landing while the nightly fuzz runs sits pending until it finishes --
+  # 20m31s in the last scheduled run (34092920961, fuzz alone 1227s). Weekly
+  # that was a one-in-seven window. Nightly it would be every night at 06:23Z,
+  # in the hours this crew merges. github.run_id is unique per run, so every
+  # schedule run is alone in its group and blocks nothing.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -68,9 +76,22 @@ jobs:
           go-version: ${{ matrix.go }}
           # This module has no dependencies and therefore no go.sum, so the
           # cache is keyed on go.mod. What it restores is the BUILD cache:
-          # compiled stdlib and compiled test packages. That is the whole of
-          # the compile cost here, and it is the difference between the
-          # windows leg at eighty seconds and the windows leg inside the law.
+          # compiled stdlib and compiled test packages.
+          #
+          # WHERE THAT ACTUALLY PAYS: the windows and macOS legs, which is
+          # where it matters, because windows is the roof of this tier. Each
+          # OS has its own key and each leg restores the cache it saved.
+          #
+          # ON LINUX IT IS MOSTLY LUCK, and the comment should say so.
+          # setup-go's key is setup-go-<os>-<go>-<sha256(go.mod)> with no
+          # per-job component, so the six ubuntu jobs on `stable` -- this
+          # leg, cross, coverage, vuln, cppcompat, apicompat -- all share one
+          # key. The first to finish saves, the rest restore whatever that
+          # job happened to have compiled and then cannot save their own
+          # (the key is immutable). In run 34780261944 the winner was
+          # cppcompat, holding little more than `go run ./compat`. Linux is
+          # not the roof, so this costs nothing today; a per-job key suffix
+          # or a direct actions/cache is the fix if it ever is.
           cache: true
           cache-dependency-path: go.mod
       - run: go vet ./...

@@ -154,9 +154,13 @@ bit `int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 buil
 checks), cppcompat (Go ↔ C++ byte-identical round trip against the pinned C++
 serialize.h), coverage (func table in the job summary), apicompat on PRs.
 `actions/setup-go` caching is on, keyed on go.mod — this module has no
-dependencies, so what it restores is the build cache.
+dependencies, so what it restores is the build cache. It pays on windows and
+macOS; on linux the six `stable` jobs share one key and the first to finish is
+the one that saves, so what the rest restore is arbitrary (linux is not the
+roof, so this costs nothing today).
 
-Nightly (`23 6 * * *`, and `workflow_dispatch`): everything above, plus
+Nightly (`23 6 * * *`, and `workflow_dispatch`): every per-commit job except
+`apicompat`, which is PR-only, plus
 `test (ubuntu-latest, 1.23.x)` — the go.mod floor, a slow-moving failure — and
 `fuzz`, 10m per target against a corpus that persists across runs via
 actions/cache. Dependabot bumps action versions weekly.
