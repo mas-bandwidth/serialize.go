@@ -31,7 +31,12 @@
 # `workflow_dispatch` on main at the release commit, green, THEN tag. The run
 # on the tag is the receipt that the tagged source is the source that passed,
 # and a red tag run does not mean "re-tag" -- it means the version may already
-# be spent and the fix is a new version, not a replacement of this one.
+# be spent and the fix is a new version, not a replacement of this one. That
+# new version also ships the RETRACTION of the spent one: a `retract` directive
+# in go.mod, which is the one thing that reaches a consumer who already
+# resolved the bad version. This repository has done it twice -- v1.0.0 for the
+# post-release renames, v1.8.0 for the arm64 compressed_float divergence -- and
+# both entries are still in go.mod, which is where to copy the form from.
 name: release check
 
 on:
