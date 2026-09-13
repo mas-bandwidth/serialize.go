@@ -24,9 +24,14 @@
 # running longer, the nightly tier does that, and nothing here should stand
 # between a finished release and its tag for more than two minutes.
 #
-# If this goes red on a tag, the tag is wrong. Delete it, fix the source, tag
-# again -- do not publish, because the proxy is immutable and a bad version
-# number is spent forever.
+# RUN THIS BEFORE THE TAG, NOT AFTER IT. In Go the tag push IS the publish --
+# there is no separate step to withhold -- so the proxy may hold the version
+# the moment the tag lands, and it holds it forever. This workflow therefore
+# cannot gate a release; nothing triggered by a tag can. The intended order is:
+# `workflow_dispatch` on main at the release commit, green, THEN tag. The run
+# on the tag is the receipt that the tagged source is the source that passed,
+# and a red tag run does not mean "re-tag" -- it means the version may already
+# be spent and the fix is a new version, not a replacement of this one.
 name: release check
 
 on:
