@@ -5,28 +5,68 @@ on:
     branches: [main]
   pull_request:
   schedule:
-    # weekly: a real fuzzing session against the cached corpus, and early
-    # warning when a new Go release or @latest tool breaks something
-    - cron: "23 6 * * 1"
+    # NIGHTLY, and this is the second tier, not a spare copy of the first.
+    # The law: what runs on every commit finishes in one to two minutes. The
+    # jobs that cannot are not deleted -- they move here, under the SAME job
+    # names, so every check still runs somewhere and a name that goes red
+    # still means what it meant. Nightly rather than weekly because the
+    # go.mod floor leg moved here: a floor violation should be six hours
+    # old when it is found, not six days.
+    #
+    # This tier also carries a real fuzzing session against the cached
+    # corpus, and is the early warning when a new Go release or an @latest
+    # tool breaks something with no commit of ours involved.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # A SCHEDULE RUN GETS ITS OWN GROUP, and that became load-bearing the moment
+  # the nightly tier got teeth. A schedule run's ref is refs/heads/main, which
+  # is the same group as a push to main; cancel-in-progress is PR-only, so a
+  # push landing while the nightly fuzz runs sits pending until it finishes --
+  # 20m31s in the last scheduled run (34092920961, fuzz alone 1227s). Weekly
+  # that was a one-in-seven window. Nightly it would be every night at 06:23Z,
+  # in the hours this crew merges. github.run_id is unique per run, so every
+  # schedule run is alone in its group and blocks nothing.
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && github.run_id || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     strategy:
       fail-fast: false
+      # EVERY ROW HERE CARRIES COVERAGE NO OTHER ROW CARRIES, or it is not in
+      # the per-commit tier.
+      #
+      #   ubuntu-latest/stable  -- amd64 linux, the reference leg
+      #   windows-latest/stable -- the only non-unix leg; path and CRLF
+      #                            behaviour, and a different linker
+      #   macos-latest/stable   -- the only arm64 leg, and arm64 is
+      #                            PLATFORM-SPECIFIC COVERAGE here, not a
+      #                            third copy of the same test. The Go arm64
+      #                            backend contracts a float multiply-add
+      #                            into one FMA where the wire format
+      #                            requires two roundings; that is how the
+      #                            v1.8.0 writer divergence shipped with
+      #                            every suite green (see the retract in
+      #                            go.mod). contraction_test.go and
+      #                            precomputed_test.go pin values that only
+      #                            discriminate on arm64 -- on amd64 the
+      #                            identical falsification passes. Drop this
+      #                            row and those files stop being a guard.
+      #
+      #   ubuntu-latest/1.23.x  -- the go.mod floor. NIGHTLY. It catches
+      #                            accidental use of newer stdlib API, which
+      #                            is a real failure and a slow-moving one:
+      #                            the floor moves when we move it, and the
+      #                            stdlib we might reach for does not change
+      #                            between one commit and the next. Same job
+      #                            name, one tier down.
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        go: [stable]
-        include:
-          # the go.mod minimum: catches accidental use of newer stdlib API
-          - os: ubuntu-latest
-            go: "1.23.x"
+        include: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('[{"os":"ubuntu-latest","go":"stable"},{"os":"macos-latest","go":"stable"},{"os":"windows-latest","go":"stable"},{"os":"ubuntu-latest","go":"1.23.x"}]') || fromJSON('[{"os":"ubuntu-latest","go":"stable"},{"os":"macos-latest","go":"stable"},{"os":"windows-latest","go":"stable"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -34,7 +74,26 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
-          cache: false
+          # This module has no dependencies and therefore no go.sum, so the
+          # cache is keyed on go.mod. What it restores is the BUILD cache:
+          # compiled stdlib and compiled test packages.
+          #
+          # WHERE THAT ACTUALLY PAYS: the windows and macOS legs, which is
+          # where it matters, because windows is the roof of this tier. Each
+          # OS has its own key and each leg restores the cache it saved.
+          #
+          # ON LINUX IT IS MOSTLY LUCK, and the comment should say so.
+          # setup-go's key is setup-go-<os>-<go>-<sha256(go.mod)> with no
+          # per-job component, so the six ubuntu jobs on `stable` -- this
+          # leg, cross, coverage, vuln, cppcompat, apicompat -- all share one
+          # key. The first to finish saves, the rest restore whatever that
+          # job happened to have compiled and then cannot save their own
+          # (the key is immutable). In run 34780261944 the winner was
+          # cppcompat, holding little more than `go run ./compat`. Linux is
+          # not the roof, so this costs nothing today; a per-job key suffix
+          # or a direct actions/cache is the fix if it ever is.
+          cache: true
+          cache-dependency-path: go.mod
       - run: go vet ./...
       - run: go test -short -race -shuffle=on ./...
       - run: go test -shuffle=on ./...
@@ -59,7 +118,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26'
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       - name: go mod tidy
         run: go mod tidy -diff
       - name: golangci-lint
@@ -79,7 +139,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
@@ -91,7 +152,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       - name: test on a 32 bit platform (int is 32 bits, bit counts must stay 64 bit)
         run: GOARCH=386 go test ./...
       - name: build for a big endian platform
@@ -109,7 +171,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       # THE FAMILY PIN -- ONE POLICY, ONE VERSION. The C++ checkout is pinned to the
       # latest RELEASED tag of mas-bandwidth/serialize, never main, and to the SAME
       # tag in all four wire-compat gates, so "compatible with C++" means the same
@@ -154,7 +217,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       - name: test with coverage
         run: go test -coverprofile=cover.out ./...
       - name: coverage summary
@@ -180,7 +244,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
-          cache: false
+          cache: true
+          cache-dependency-path: go.mod
       - name: gorelease
         run: |
           BASE=$(git describe --tags --abbrev=0 origin/main)
@@ -190,16 +255,28 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   fuzz:
+    # NIGHTLY. This was the slowest job in the per-commit tier -- 85s and 87s
+    # in the last three runs, when the next-slowest was 80s and the law is
+    # 120s for the whole wall. A 30s smoke per target is also the wrong shape
+    # of work to gate a commit on: fuzzing finds things by running longer, not
+    # by running more often, and what it finds is almost never the diff in
+    # front of it. Ten minutes per target against the cached corpus, once a
+    # night, under the same job name, finds strictly more.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # 30s smoke on pushes and PRs; the weekly scheduled run fuzzes for real
-      FUZZTIME: ${{ github.event_name == 'schedule' && '10m' || '30s' }}
+      FUZZTIME: 10m
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: stable
+          # deliberately OFF here, and only here: setup-go's cache covers
+          # ~/.cache/go-build, which is the parent of the fuzz corpus cache
+          # restored in the next step. Two caches writing one directory is a
+          # corpus that silently loses entries, and this tier is nightly --
+          # there is nothing here worth trading the corpus for.
           cache: false
       - name: fuzz corpus cache
         uses: actions/cache@v6
