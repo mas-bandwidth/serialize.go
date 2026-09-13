@@ -302,7 +302,7 @@ func (r *BitReader) tryReadBits(bits int) (uint32, bool) {
 }
 
 // readBits is the unchecked hot path shared by ReadBits and the read stream, which
-// perform their own validation before calling it. bits must be in [1,32] and must not
+// perform their own validation before calling it. bits must be in [0,32] and must not
 // read past the end of the buffer.
 //
 // The body is kept small enough for the compiler to inline into the per-field read
