@@ -138,16 +138,28 @@ published only under serialize.go.
 
 ## CI (.github/workflows/ci.yml)
 
-Push/PR, plus a weekly scheduled run: test matrix (3 OSes on stable Go plus an
-ubuntu leg on the go.mod minimum; race + shuffle + full), lint
+Two tiers, one file. **The per-commit tier finishes inside two minutes**; a job
+that cannot does not get deleted, it moves to the nightly tier under the same
+job name, so every check still runs somewhere.
+
+Per commit (push/PR): test matrix — ubuntu, windows and macOS on stable Go,
+race + shuffle + full. macOS is there because it is the only **arm64** leg and
+arm64 is real coverage, not a third copy: `contraction_test.go` and
+`precomputed_test.go` pin values that only discriminate under the arm64
+backend's FMA contraction (see the v1.8.0 retract in go.mod). Plus lint
 (golangci-lint — version pinned in ci.yml, bump deliberately — + modernize +
-`go mod tidy -diff`), spec-sync and corpus-sync (STANDARD.md and conformance/ against
-upstream main), vuln (govulncheck), cross (linux/386 full tests — 32 bit
-`int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 build
+`go mod tidy -diff`), spec-sync and corpus-sync (STANDARD.md and conformance/
+against upstream main), vuln (govulncheck), cross (linux/386 full tests — 32
+bit `int` coverage for the int64 bit counts — plus s390x, wasm and wasip1 build
 checks), cppcompat (Go ↔ C++ byte-identical round trip against the pinned C++
-serialize.h), coverage (func table in the job summary), fuzz (30s per target on
-push/PR; the weekly run fuzzes 10m per target, and the corpus persists across
-runs via actions/cache). Dependabot bumps action versions weekly.
+serialize.h), coverage (func table in the job summary), apicompat on PRs.
+`actions/setup-go` caching is on, keyed on go.mod — this module has no
+dependencies, so what it restores is the build cache.
+
+Nightly (`23 6 * * *`, and `workflow_dispatch`): everything above, plus
+`test (ubuntu-latest, 1.23.x)` — the go.mod floor, a slow-moving failure — and
+`fuzz`, 10m per target against a corpus that persists across runs via
+actions/cache. Dependabot bumps action versions weekly.
 
 ## Conventions
 
