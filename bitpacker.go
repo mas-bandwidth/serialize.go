@@ -211,13 +211,14 @@ func (w *BitWriter) Data() []byte {
 //
 // Any buffer size is supported. For the fastest reads, keep at least 12 bytes of slack in
 // the backing array beyond the data — for example, read packets into a large buffer and
-// slice the packet out of it. The reader detects the slack via cap() and uses the fully
-// branchless window load everywhere; without slack, Reset copies the final bytes of the
-// data into a small zero padded tail window, and reads near the end of the buffer load
-// from that instead. Either way the load is a single window: slack (or padding) bytes
-// are loaded but never interpreted, because bits past the end of the data cannot reach
-// the output of a read. A [1,32] field needs an 8 byte window and a [1,64] field a 12
-// byte one, which is where the 12 comes from.
+// slice the packet out of it. The reader detects the slack via cap() and takes one branch
+// per window load, selecting the window source: with slack, every load comes straight
+// from the buffer; without slack, Reset copies the final bytes of the data into a small
+// zero padded tail window, and reads near the end of the buffer load from that instead.
+// Either way the load is a single window: slack (or padding) bytes are loaded but never
+// interpreted, because bits past the end of the data cannot reach the output of a read.
+// A [1,32] field needs an 8 byte window and a [1,64] field a 12 byte one, which is where
+// the 12 comes from.
 //
 // The zero value is an exhausted reader: create one with NewBitReader, or Reset one onto
 // a buffer before use.
