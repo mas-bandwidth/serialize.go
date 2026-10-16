@@ -128,8 +128,17 @@ jobs:
           # pinned so releases with new checks break CI deliberately, not
           # randomly; bump by hand
           version: v2.12.2
+      # PINNED for the same reason as the Go version above, and it moves with
+      # it. `@latest` resolves against gopls releases, and a gopls release can
+      # raise its own `go` directive: v0.24.0 (2026-10-14) went to `go 1.27.0`,
+      # so under this job's Go 1.26 and setup-go's GOTOOLCHAIN=local the `go
+      # run` refused to build the tool at all -- `requires go >= 1.27.0
+      # (running go 1.26.9)`. That reddened a scheduled run on 2026-10-16 with
+      # no commit behind it. v0.23.0 declares `go 1.26.0`. Pick the newest
+      # gopls whose `go` directive the pinned Go above satisfies, and bump the
+      # two together.
       - name: modernize
-        run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest ./...
+        run: go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@v0.23.0 ./...
 
   vuln:
     runs-on: ubuntu-latest
