@@ -292,6 +292,8 @@ func TestConformanceControls(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// a windows checkout may carry CRLF line endings, and a needle spans lines
+			source = bytes.ReplaceAll(source, []byte("\r\n"), []byte("\n"))
 			if n := strings.Count(string(source), control.needle); n != 1 {
 				t.Fatalf("the needle occurs %d times in %s, want exactly once: a control that stopped matching sabotages nothing\nneedle: %q",
 					n, control.file, control.needle)
