@@ -237,3 +237,40 @@ func TestEndWriteAndMeasure(t *testing.T) {
 		t.Fatalf("a read after the end gave %v, want ErrPastEnd", err)
 	}
 }
+
+// TestStringClaimedLengthCheckedBeforeAllocation: a string's length comes off the wire,
+// so a few bytes can claim a payload of two gigabytes. The reader aligns, refuses a
+// claimed length past the bytes that remain as ErrPastEnd, and only then allocates, so
+// the refusal costs no allocation at all. (Found by the serialize.java port's cold
+// reader, where the order was the other way round; bytes reads fill a caller-owned
+// buffer and allocate nothing either way.)
+func TestStringClaimedLengthCheckedBeforeAllocation(t *testing.T) {
+	const bufferSize = math.MaxInt32 // a 31 bit length field
+	w := NewWriteStream(make([]byte, 16))
+	claimed := uint32(bufferSize - 1)
+	w.SerializeBits(&claimed, 31)
+	w.Flush()
+	packet := w.Data() // four bytes claiming a 2^31 - 2 byte payload
+
+	allocations := testing.AllocsPerRun(100, func() {
+		r := NewReadStream(packet)
+		value := "unmodified"
+		if err := r.SerializeString(&value, bufferSize); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("a claimed length past the stream gave %v, want ErrPastEnd", err)
+		}
+		if value != "unmodified" {
+			t.Fatalf("the refused read wrote its destination")
+		}
+	})
+	// NewReadStream itself allocates the stream; the refused string read adds nothing
+	baseline := testing.AllocsPerRun(100, func() { _ = NewReadStream(packet) })
+	if allocations > baseline {
+		t.Fatalf("the refused read allocated %v times beyond the stream's own %v", allocations, baseline)
+	}
+
+	// and the same claim through bytes: the count is the caller's, the check the same
+	r := NewReadStream(packet[:1])
+	if err := r.SerializeBytes(make([]byte, 64)); !errors.Is(err, ErrPastEnd) {
+		t.Fatalf("a byte count past the stream gave %v, want ErrPastEnd", err)
+	}
+}
