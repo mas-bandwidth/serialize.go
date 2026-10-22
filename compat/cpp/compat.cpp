@@ -4,15 +4,17 @@
     PR: each side writes its stream to a file, the two files must be byte identical,
     and each side must read the other's file back to the exact values.
 
-    Download serialize.h (v1.16.0) from github.com/mas-bandwidth/serialize into this
+    Download serialize.h (v2.0.0) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v1.16.0/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.0.0/serialize.h
         c++ -O2 -std=c++17 -Wall -o compat compat.cpp
         ./compat write cpp.bin && ./compat read cpp.bin
 
-    The pin is v1.16.0, the same release ci.yml downloads, and it never moves
-    backwards past the floors underneath it. It must be at least v1.7.0, the C++
+    The pin is v2.0.0, the same release ci.yml downloads, and it never moves
+    backwards past the floors underneath it. It must be at least v2.0.0, the first
+    release implementing format version 2.0: wstring is gone and serialize_end is
+    new, and this harness uses both facts. It must be at least v1.7.0, the C++
     release whose writer forces the intermediate rounding in compressed_float: the
     harness carries a vector chosen to catch a contracted (FMA) quantization, and
     against v1.6.2 the check is circular on arm64 — clang contracts v1.6.2's writer
@@ -44,7 +46,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
 struct CompatData
 {
@@ -71,7 +72,7 @@ struct CompatData
     int32_t relativeFar;
     uint8_t bytes[7];
     char str[16];
-    wchar_t wstr[8];
+    char text[8];
     uint64_t bits33;
     int64_t int64Full;
     int64_t int64Range;
@@ -103,7 +104,7 @@ struct CompatData
         const uint8_t bytesInit[7] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01 };
         memcpy( bytes, bytesInit, sizeof( bytes ) );
         strcpy( str, "golden" );
-        wcscpy( wstr, L"мир" );  // "мир": cyrillic, BMP only
+        strcpy( text, "\xD0\xBC\xD0\xB8\xD1\x80" );  // "мир": cyrillic, two byte UTF-8 sequences
         bits33 = 0x1DEADBEEFULL;
         int64Full = -123456789012345LL;
         int64Range = 4123456789LL;
@@ -154,10 +155,13 @@ struct CompatData
         serialize_align( stream );
         serialize_bytes( stream, bytes, sizeof( bytes ) );
         serialize_string( stream, str, sizeof( str ) );
-        serialize_wstring( stream, wstr, sizeof( wstr ) / sizeof( wstr[0] ) );
+        serialize_string( stream, text, sizeof( text ) );
         serialize_bits( stream, bits33, 33 );
         serialize_int64( stream, int64Full, INT64_MIN, INT64_MAX );
         serialize_int64( stream, int64Range, -5000000000LL, +5000000000LL );
+        // the end of the object: nothing on write, and on read the stream must hold
+        // exactly the packet, with zero padding in its final byte (STANDARD.md end)
+        serialize_end( stream );
         return true;
     }
 
@@ -186,7 +190,7 @@ struct CompatData
             && relativeFar == other.relativeFar
             && memcmp( bytes, other.bytes, sizeof( bytes ) ) == 0
             && strcmp( str, other.str ) == 0
-            && wcscmp( wstr, other.wstr ) == 0
+            && strcmp( text, other.text ) == 0
             && bits33 == other.bits33
             && int64Full == other.int64Full
             && int64Range == other.int64Range;

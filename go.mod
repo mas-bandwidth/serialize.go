@@ -1,13 +1,6 @@
-module github.com/mas-bandwidth/serialize.go
+module github.com/mas-bandwidth/serialize.go/v2
 
 go 1.23
 
-// v1.0.0 was replaced immediately after release: Stream.Error was renamed to
-// Stream.Err and Serializable to Serializer, following Go naming conventions.
-retract v1.0.0
-
-// v1.8.0 writes divergent compressed_float bytes on arm64: the writer's
-// quantization compiled to a fused multiply-add (one rounding where the wire
-// format requires two), so Apple Silicon builds disagree with the C, C++, C#
-// and Rust ports for values near a half-quantum boundary. Fixed in v1.8.1.
-retract v1.8.0
+// v2 implements format version 2.0 of the wire (STANDARD.md). The retractions of
+// v1.0.0 and v1.8.0 belong to the v1 module path and stay recorded in its go.mod.

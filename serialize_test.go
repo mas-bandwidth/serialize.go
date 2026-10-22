@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"math"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -174,7 +173,7 @@ type testData struct {
 	int64Range           int64
 	bytes                [17]byte
 	str                  string
-	wstr                 string
+	text                 string
 }
 
 type testObject struct {
@@ -211,7 +210,7 @@ func (o *testObject) init() {
 	}
 
 	o.data.str = "hello world!"
-	o.data.wstr = "привіт, світ!"
+	o.data.text = "привіт, світ!"
 }
 
 func (o *testObject) Serialize(stream Stream) error {
@@ -262,7 +261,7 @@ func (o *testObject) Serialize(stream Stream) error {
 	stream.SerializeBytes(o.data.bytes[:])
 
 	stream.SerializeString(&o.data.str, 256)
-	stream.SerializeWideString(&o.data.wstr, 256)
+	stream.SerializeString(&o.data.text, 256)
 
 	return stream.Err()
 }
@@ -287,6 +286,9 @@ func TestSerialize(t *testing.T) {
 	readStream.SetContext(context)
 	if err := readObject.Serialize(readStream); err != nil {
 		t.Fatalf("read failed: %v", err)
+	}
+	if err := readStream.SerializeEnd(); err != nil {
+		t.Fatalf("read end failed: %v", err)
 	}
 
 	if readObject.data != writeObject.data {
@@ -378,10 +380,10 @@ func readFunction(t *testing.T, readStream *ReadStream) {
 		t.Fatalf("expected \"hello\", got %q", str)
 	}
 
-	var wstr string
-	fatalIf(readStream.SerializeWideString(&wstr, 20))
-	if wstr != "привіт" {
-		t.Fatalf("expected \"привіт\", got %q", wstr)
+	var text string
+	fatalIf(readStream.SerializeString(&text, 20))
+	if text != "привіт" {
+		t.Fatalf("expected \"привіт\", got %q", text)
 	}
 
 	fatalIf(readStream.SerializeAlign())
@@ -403,6 +405,10 @@ func readFunction(t *testing.T, readStream *ReadStream) {
 	if relative != 105 {
 		t.Fatalf("expected 105, got %d", relative)
 	}
+
+	// the packet holds exactly what was written: the end finds no trailing byte and
+	// zero padding
+	fatalIf(readStream.SerializeEnd())
 }
 
 func TestReadWrite(t *testing.T) {
@@ -437,8 +443,8 @@ func TestReadWrite(t *testing.T) {
 	str := "hello"
 	writeStream.SerializeString(&str, 10)
 
-	wstr := "привіт"
-	writeStream.SerializeWideString(&wstr, 20)
+	text := "привіт"
+	writeStream.SerializeString(&text, 20)
 
 	writeStream.SerializeAlign()
 
@@ -633,8 +639,8 @@ func TestSerializeInt64Validation(t *testing.T) {
 
 		readStream := NewReadStream(buffer)
 		var value int64
-		if err := readStream.SerializeInt64(&value, math.MinInt64, math.MaxInt64); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeInt64(&value, math.MinInt64, math.MaxInt64); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 }
@@ -646,16 +652,16 @@ func TestSerializeBytesValidation(t *testing.T) {
 	{
 		readStream := NewReadStream(buffer)
 		data := make([]byte, 17)
-		if err := readStream.SerializeBytes(data); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeBytes(data); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 
 	{
 		readStream := NewReadStream(buffer)
 		data := make([]byte, 1<<20)
-		if err := readStream.SerializeBytes(data); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeBytes(data); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 }
@@ -933,7 +939,7 @@ type goldenWireData struct {
 	relativeFar          int32
 	bytes                [7]byte
 	str                  string
-	wstr                 string
+	text                 string
 	fixedQ8_8            int64
 	fixedQ16_16          int64
 	fixedQ48_16          int64
@@ -962,7 +968,7 @@ func goldenWireInit() goldenWireData {
 		relativeFar:          2100, // difference of 2000 from the base: exercises the twelve bit bucket
 		bytes:                [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
 		str:                  "golden",
-		wstr:                 "мир",                                     // cyrillic, BMP only
+		text:                 "\u7881\u77F3",                            // 碁石, go stones: two three byte UTF-8 sequences
 		fixedQ8_8:            -(3*256 + 64),                             // -3.25 in Q8.8
 		fixedQ16_16:          1234*65536 + 32768,                        // 1234.5 in Q16.16
 		fixedQ48_16:          -(54321*65536 + 12345),                    // -54321.1883... in Q48.16
@@ -994,7 +1000,7 @@ func goldenWireSerialize(stream Stream, data *goldenWireData) error {
 	stream.SerializeAlign()
 	stream.SerializeBytes(data.bytes[:])
 	stream.SerializeString(&data.str, 16)
-	stream.SerializeWideString(&data.wstr, 8)
+	stream.SerializeString(&data.text, 8)
 	stream.SerializeAlign() // the fixed point section starts byte aligned, so every byte pinned above it stays put
 	stream.SerializeFixed64(&data.fixedQ8_8, 8, 8, -100, +100)
 	stream.SerializeFixed64(&data.fixedQ16_16, 16, 16, -2000, +2000)
@@ -1003,25 +1009,26 @@ func goldenWireSerialize(stream Stream, data *goldenWireData) error {
 	stream.SerializeAlign()                                                                             // the wide fixed section starts byte aligned, so every byte pinned above it stays put
 	stream.SerializeFixed128(&data.fixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872) // ±2^57 units: 75 bits, the three group structure
 	stream.SerializeFixed128(&data.fixedQ64_64Wide, 64, 64, math.MinInt64, math.MaxInt64)               // full unit range: 128 bits, the four group structure
+	stream.SerializeEnd()                                                                               // the reader's end consumes the final byte's five bits of zero padding
 	return stream.Err()
 }
 
-// goldenWireBytes are copied verbatim from the C++ serialize library test suite.
-// The fixed point tail (the 40 bytes from offset 72) was additionally re-derived
-// from STANDARD.md's stated rules alone — offset encoding over the raw (scaled)
-// bounds, 32 bit groups from least significant upward — and the derivation agrees
-// with the C++ bytes exactly, so this pin is Go, C++ and the document agreeing.
+// goldenWireBytes are the whole message STANDARD.md prints under "The whole message",
+// format version 2.0: 106 bytes, the same bytes the C++ serialize library's golden
+// test pins and the corpus carries as message-golden-whole. Those bytes come from a
+// writer written from the document alone (tools/conformance in the C++ repository),
+// so this pin is Go, C++ and the document agreeing. Under format 1.1 the message
+// carried a wstring where the second string now sits, and was 112 bytes.
 var goldenWireBytes = []byte{
 	0x5D, 0xDA, 0xF7, 0xE6, 0xD5, 0x77, 0xDF, 0x56, 0xEF, 0x9F, 0x75, 0x19,
 	0x52, 0xBC, 0xDA, 0x0F, 0x49, 0x40, 0xF4, 0x55, 0x55, 0x55, 0x55, 0x55,
 	0x55, 0x55, 0xFF, 0xFC, 0xD1, 0x48, 0xE0, 0x59, 0xD1, 0x48, 0xC0, 0x7B,
 	0xF3, 0x6A, 0xE2, 0x59, 0xD1, 0x48, 0x84, 0xB7, 0x06, 0xDE, 0xAD, 0xBE,
-	0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0xE3,
-	0x21, 0x00, 0x00, 0xC0, 0x21, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x00,
-	0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C, 0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF,
-	0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A, 0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09,
-	0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E, 0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C,
-	0x2B, 0x1A, 0x09, 0x04,
+	0xEF, 0xCA, 0xFE, 0x01, 0x06, 0x67, 0x6F, 0x6C, 0x64, 0x65, 0x6E, 0x06,
+	0xE7, 0xA2, 0x81, 0xE7, 0x9F, 0xB3, 0xC0, 0x60, 0x00, 0x80, 0xA2, 0x7C,
+	0xFC, 0xEC, 0x26, 0xCB, 0xFF, 0xFF, 0x4B, 0x1D, 0x1F, 0xEF, 0xD2, 0x1A,
+	0x1F, 0x01, 0xE9, 0xFF, 0xFF, 0x09, 0x19, 0x2A, 0x3B, 0x4C, 0x5D, 0x6E,
+	0x7F, 0x78, 0x6F, 0x5E, 0x4D, 0x3C, 0x2B, 0x1A, 0x09, 0x04,
 }
 
 func TestGoldenWireFormat(t *testing.T) {
@@ -1200,16 +1207,16 @@ func TestWriteOverflow(t *testing.T) {
 	if err := stream.SerializeBits(&v, 32); err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.SerializeBits(&v, 1); !errors.Is(err, ErrOverflow) {
-		t.Fatalf("expected ErrOverflow, got %v", err)
+	if err := stream.SerializeBits(&v, 1); !errors.Is(err, ErrPastEnd) {
+		t.Fatalf("expected ErrPastEnd, got %v", err)
 	}
 
 	// the error is sticky: every later call reports it without touching the stream
 	flag := true
-	if err := stream.SerializeBool(&flag); !errors.Is(err, ErrOverflow) {
-		t.Fatalf("expected sticky ErrOverflow, got %v", err)
+	if err := stream.SerializeBool(&flag); !errors.Is(err, ErrPastEnd) {
+		t.Fatalf("expected sticky ErrPastEnd, got %v", err)
 	}
-	if !errors.Is(stream.Err(), ErrOverflow) {
+	if !errors.Is(stream.Err(), ErrPastEnd) {
 		t.Fatal("expected the error to latch on the stream")
 	}
 	if stream.BitsProcessed() != 64 {
@@ -1227,8 +1234,8 @@ func TestAlignValidation(t *testing.T) {
 	if err := stream.SerializeBits(&v, 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.SerializeAlign(); !errors.Is(err, ErrAlign) {
-		t.Fatalf("expected ErrAlign, got %v", err)
+	if err := stream.SerializeAlign(); !errors.Is(err, ErrNonzeroPadding) {
+		t.Fatalf("expected ErrNonzeroPadding, got %v", err)
 	}
 }
 
@@ -1372,217 +1379,22 @@ func TestSerializeStringReadChangedContentSameLength(t *testing.T) {
 	}
 }
 
-func TestSerializeWideStringRoundTrip(t *testing.T) {
-	values := []string{"", "мир", "привіт, світ!", "😀🚀"} // BMP and astral code points
-
-	for _, expected := range values {
-		buffer := make([]byte, 512)
-
-		writeStream := NewWriteStream(buffer)
-		v := expected
-		if err := writeStream.SerializeWideString(&v, 64); err != nil {
-			t.Fatal(err)
-		}
-		writeStream.Flush()
-
-		readStream := NewReadStream(writeStream.Data())
-		var value string
-		if err := readStream.SerializeWideString(&value, 64); err != nil {
-			t.Fatal(err)
-		}
-		if value != expected {
-			t.Fatalf("expected %q, got %q", expected, value)
-		}
-	}
-
-	// groups a Go string cannot hold must be rejected on read: values above 0xFFFF
-	// are not UTF-16 code units (0x1F600 is the OLD astral wire — one code point per
-	// group — and must not decode), and unpaired surrogates have no UTF-8
-	// representation. Each vector is a full group sequence, malformed as described.
-	invalidGroupSequences := []struct {
-		name   string
-		groups []uint32
-	}{
-		{"lone high surrogate", []uint32{0xD800}},
-		{"low surrogate first", []uint32{0xDFFF}},
-		{"high surrogate not followed by a low surrogate", []uint32{0xD83D, 0x0041}},
-		{"high surrogate followed by a high surrogate", []uint32{0xD83D, 0xD83D}},
-		{"raw astral code point: the old wire", []uint32{0x1F600}},
-		{"above the code point space", []uint32{0x110000}},
-		{"all bits set", []uint32{0xFFFFFFFF}},
-	}
-	for _, sequence := range invalidGroupSequences {
-		buffer := make([]byte, 24)
-
-		writeStream := NewWriteStream(buffer)
-		length := int32(len(sequence.groups))
-		writeStream.SerializeInt(&length, 0, 63) // length prefix for bufferSize 64
-		for _, group := range sequence.groups {
-			g := group
-			writeStream.SerializeBits(&g, 32)
-		}
-		writeStream.Flush()
-
-		readStream := NewReadStream(buffer)
-		var value string
-		if err := readStream.SerializeWideString(&value, 64); !errors.Is(err, ErrValueOutOfRange) {
-			t.Fatalf("%s: expected ErrValueOutOfRange, got %v", sequence.name, err)
-		}
-		if value != "" {
-			t.Fatalf("%s: value must be left unmodified on failure, got %q", sequence.name, value)
-		}
-	}
-}
-
-func TestSerializeWideStringUTF16Wire(t *testing.T) {
-	// STANDARD.md: each 32 bit group carries one UTF-16 code unit, so an astral code
-	// point is TWO groups — a surrogate pair — and the length prefix counts code
-	// units, not code points. U+1F600 encodes as 0xD83D 0xDE00: this pins the exact
-	// wire, the bytes a 2 byte wchar_t C++ platform has always produced.
-	buffer := make([]byte, 32)
-
-	writeStream := NewWriteStream(buffer)
-	v := "a\U0001F600" // one basic-plane code point + one astral: three code units
-	if err := writeStream.SerializeWideString(&v, 64); err != nil {
-		t.Fatal(err)
-	}
-	if got := writeStream.BitsProcessed(); got != 6+3*32 {
-		t.Fatalf("expected %d bits (6 bit length prefix + three 32 bit groups), got %d", 6+3*32, got)
-	}
-	writeStream.Flush()
-
-	readStream := NewReadStream(writeStream.Data())
-	var length int32
-	readStream.SerializeInt(&length, 0, 63)
-	if length != 3 {
-		t.Fatalf("length prefix must count UTF-16 code units: expected 3, got %d", length)
-	}
-	expectedGroups := []uint32{'a', 0xD83D, 0xDE00} // 'a', then the U+1F600 surrogate pair
-	for i, expected := range expectedGroups {
-		var group uint32
-		readStream.SerializeBits(&group, 32)
-		if group != expected {
-			t.Fatalf("group %d: expected %#06x, got %#06x", i, expected, group)
-		}
-	}
-	if err := readStream.Err(); err != nil {
-		t.Fatal(err)
-	}
-
-	// and the pair recombines on read
-	readStream = NewReadStream(writeStream.Data())
-	var value string
-	if err := readStream.SerializeWideString(&value, 64); err != nil {
-		t.Fatal(err)
-	}
-	if value != "a\U0001F600" {
-		t.Fatalf("expected %q, got %q", "a\U0001F600", value)
-	}
-
-	// the measure stream agrees with the write stream on the unit count
-	measureStream := NewMeasureStream()
-	m := "a\U0001F600"
-	if err := measureStream.SerializeWideString(&m, 64); err != nil {
-		t.Fatal(err)
-	}
-	if measureStream.BitsProcessed() != writeStream.BitsProcessed() {
-		t.Fatalf("measure disagrees with write: %d vs %d bits", measureStream.BitsProcessed(), writeStream.BitsProcessed())
-	}
-
-	// bufferSize bounds the length in code units: two astral code points are four
-	// units, one too many for bufferSize 4 (string + null must fit, C++ convention)
-	writeStream = NewWriteStream(make([]byte, 32))
-	overflow := "\U0001F600\U0001F680"
-	if err := writeStream.SerializeWideString(&overflow, 4); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("expected ErrValueOutOfRange for four code units against bufferSize 4, got %v", err)
-	}
-}
-
-// TestSerializeWideStringFamilyPin is the cross-family conformance vector: U+1F600
-// then U+0041 through an 8 unit buffer. serialize pins it in
-// test_wstring_utf16_code_units and serialize.c in test/roundtrip.c — every port
-// must produce these exact bytes. The pin is spelled three ways and all three must
-// agree: the literal bytes, the wire built from raw bit operations (a 3 bit [0,7]
-// length field carrying 3, then one 32 bit group per code unit), and the wstring
-// path itself. Go strings hold code points, so the local value is "\U0001F600A"
-// and the write path splits the astral code point into the surrogate pair
-// 0xD83D 0xDE00 — the same bytes a 2 byte wchar_t platform produces from the pair
-// it already holds.
-func TestSerializeWideStringFamilyPin(t *testing.T) {
-	// the family's pinned bytes: length 3 in a 3 bit field, then 0xD83D, 0xDE00,
-	// 0x0041 as 32 bit groups — 99 bits, 13 bytes
-	pinnedBytes := []byte{
-		0xEB, 0xC1, 0x06, 0x00, 0x00, 0xF0, 0x06, 0x00, 0x08, 0x02, 0x00, 0x00, 0x00,
-	}
-
-	// the wire spelled out with raw bit operations must reproduce the literal
-	rawStream := NewWriteStream(make([]byte, 64))
-	length := int32(3)
-	rawStream.SerializeInt(&length, 0, 7)
-	for _, group := range []uint32{0xD83D, 0xDE00, 0x0041} {
-		g := group
-		rawStream.SerializeBits(&g, 32)
-	}
-	rawStream.Flush()
-	if err := rawStream.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(rawStream.Data(), pinnedBytes) {
-		t.Fatalf("raw bit operations disagree with the pinned bytes:\nexpected %x\ngot      %x", pinnedBytes, rawStream.Data())
-	}
-
-	// write side: the wstring path must produce exactly the pinned bytes
-	writeStream := NewWriteStream(make([]byte, 64))
-	v := "\U0001F600A" // one astral code point + one basic-plane: three code units
-	if err := writeStream.SerializeWideString(&v, 8); err != nil {
-		t.Fatal(err)
-	}
-	writeStream.Flush()
-	if got := writeStream.BitsProcessed(); got != 3+3*32 {
-		t.Fatalf("expected %d bits (3 bit length prefix + three 32 bit groups), got %d", 3+3*32, got)
-	}
-	if !bytes.Equal(writeStream.Data(), pinnedBytes) {
-		t.Fatalf("wstring path disagrees with the pinned bytes:\nexpected %x\ngot      %x", pinnedBytes, writeStream.Data())
-	}
-
-	// the measure stream agrees with the write stream on the unit count
-	measureStream := NewMeasureStream()
-	m := "\U0001F600A"
-	if err := measureStream.SerializeWideString(&m, 8); err != nil {
-		t.Fatal(err)
-	}
-	if measureStream.BitsProcessed() != writeStream.BitsProcessed() {
-		t.Fatalf("measure disagrees with write: %d vs %d bits", measureStream.BitsProcessed(), writeStream.BitsProcessed())
-	}
-
-	// read side: the pinned bytes decode back to the local representation — the
-	// surrogate pair recombines, because Go strings hold code points
-	readStream := NewReadStream(pinnedBytes)
-	var value string
-	if err := readStream.SerializeWideString(&value, 8); err != nil {
-		t.Fatal(err)
-	}
-	if value != "\U0001F600A" {
-		t.Fatalf("expected %q, got %q", "\U0001F600A", value)
-	}
-}
-
-// TestReaderContentValidation pins the reader-validation ruling (2026-08-15): the
-// well-formedness rules under string and wstring bind the READ side, because readers
-// face untrusted bytes and refusal rules are format. Four doctored streams, one per
-// refusal — none producible by a conforming writer: interior NUL cannot occur when
-// the length derives from the NUL-terminated form (and accepting one hands C interop
-// two disagreeing lengths for the same payload), and well-formed UTF-8/UTF-16 is the
-// writer's obligation. The write path is untouched: writes are trusted, per doctrine.
+// TestReaderContentValidation pins the reader-validation rules under string: they bind
+// the READ side, because readers face untrusted bytes and refusal rules are format, and
+// each names its own reason (STANDARD.md string, format 2.0). Three doctored streams,
+// none producible by a conforming writer: an interior NUL gives the payload two
+// disagreeing lengths, the wire's and the one every consumer that stops at a zero
+// computes, and well-formed UTF-8 is the writer's obligation. The write path is
+// untouched: writes are trusted, per doctrine.
 //
-// Red-then-green: each stream below was shown ACCEPTED by the reader with its check
-// temporarily inverted or removed (streams (a), (b) and (d) predate their checks and
-// were accepted by the unmodified reader; stream (c) was accepted with the surrogate
-// arm of the group check commented out), so each check is what refuses its stream.
+// Red-then-green: streams (a) and (b) were accepted by the reader before their checks
+// existed, (b) and (c) were refused as ErrValueOutOfRange under format 1.1, and (c)
+// is refused as ErrInvalidUTF8 by a reader that validates the encoding before it scans
+// for NUL — so each row is what pins its rule and its reason.
 func TestReaderContentValidation(t *testing.T) {
-	// narrow doctored streams: length prefix + align + raw payload bytes, the exact
-	// wire shape of serialize_string against bufferSize 64
-	narrowStream := func(payload []byte) []byte {
+	// doctored streams: length prefix + align + raw payload bytes, the exact wire
+	// shape of serialize_string against bufferSize 64
+	stringStream := func(payload []byte) []byte {
 		buffer := make([]byte, 72)
 		writeStream := NewWriteStream(buffer)
 		length := int32(len(payload))
@@ -1592,78 +1404,71 @@ func TestReaderContentValidation(t *testing.T) {
 		writeStream.Flush()
 		return writeStream.Data()
 	}
-	// wide doctored streams: length prefix + one 32 bit group per unit, no align
-	wideStream := func(groups []uint32) []byte {
-		buffer := make([]byte, 72)
-		writeStream := NewWriteStream(buffer)
-		length := int32(len(groups))
-		writeStream.SerializeInt(&length, 0, 63)
-		for _, group := range groups {
-			g := group
-			writeStream.SerializeBits(&g, 32)
-		}
-		writeStream.Flush()
-		return writeStream.Data()
-	}
 
 	refusals := []struct {
 		name string
 		data []byte
-		read func(s *ReadStream, value *string) error
+		want Refusal
 	}{
-		{"(a) string: invalid UTF-8", narrowStream([]byte{'h', 0xFF, 'i'}),
-			func(s *ReadStream, value *string) error { return s.SerializeString(value, 64) }},
+		{"(a) invalid UTF-8", stringStream([]byte{'h', 0xFF, 'i'}), ErrInvalidUTF8},
 		// 0x00 is a valid UTF-8 byte, so this stream isolates the NUL check from (a)
-		{"(b) string: interior NUL", narrowStream([]byte{'h', 0x00, 'i'}),
-			func(s *ReadStream, value *string) error { return s.SerializeString(value, 64) }},
-		{"(c) wstring: unpaired surrogate", wideStream([]uint32{'A', 0xD800, 'B'}),
-			func(s *ReadStream, value *string) error { return s.SerializeWideString(value, 64) }},
-		// 0x0000 is a valid UTF-16 code unit and no surrogate, isolating this from (c)
-		{"(d) wstring: interior NUL", wideStream([]uint32{'A', 0x0000, 'B'}),
-			func(s *ReadStream, value *string) error { return s.SerializeWideString(value, 64) }},
+		{"(b) interior NUL", stringStream([]byte{'h', 0x00, 'i'}), ErrEmbeddedNul},
+		// both rules broken, the invalid byte first: the NUL scan runs over the whole
+		// payload before the encoding is checked, so the reason is the NUL
+		{"(c) invalid UTF-8 before a NUL", stringStream([]byte{0xFF, 0x00}), ErrEmbeddedNul},
 	}
 	for _, refusal := range refusals {
 		readStream := NewReadStream(refusal.data)
 		value := "unmodified"
-		if err := refusal.read(readStream, &value); !errors.Is(err, ErrValueOutOfRange) {
-			t.Fatalf("%s: expected ErrValueOutOfRange, got %v", refusal.name, err)
+		if err := readStream.SerializeString(&value, 64); !errors.Is(err, refusal.want) {
+			t.Fatalf("%s: expected %v, got %v", refusal.name, refusal.want, err)
 		}
 		if value != "unmodified" {
 			t.Fatalf("%s: value must be left unmodified on refusal, got %q", refusal.name, value)
 		}
-		// the refusal is terminal: the error latches and later reads are no-ops
-		if err := readStream.Err(); !errors.Is(err, ErrValueOutOfRange) {
+		// the refusal is terminal: the error latches and later reads are no-ops that
+		// echo the first reason
+		if err := readStream.Err(); !errors.Is(err, refusal.want) {
 			t.Fatalf("%s: refusal must latch on the stream, got %v", refusal.name, err)
 		}
 		var next uint32
-		if err := readStream.SerializeBits(&next, 8); !errors.Is(err, ErrValueOutOfRange) {
+		if err := readStream.SerializeBits(&next, 8); !errors.Is(err, refusal.want) {
 			t.Fatalf("%s: reads after refusal must return the latched error, got %v", refusal.name, err)
 		}
 	}
 
-	// control: conforming payloads still round trip through the same call sites —
-	// multibyte UTF-8 on the narrow path, a surrogate pair on the wide path
-	buffer := make([]byte, 72)
-	writeStream := NewWriteStream(buffer)
-	narrow := "héllo"
-	wide := "a\U0001F600"
-	if err := writeStream.SerializeString(&narrow, 64); err != nil {
-		t.Fatal(err)
+	// control: real text round trips byte for byte through the same call site — no
+	// normalization, no replacement, no stripped byte order mark, every plane
+	texts := []string{
+		"héllo",
+		"e\u0301",                        // combining acute: stays three bytes, distinct from U+00E9
+		"\uFEFFbom",                      // a byte order mark is kept
+		"\uFFFF",                         // a noncharacter is well formed and travels
+		"\u7881\u77F3",                   // 碁石
+		"\U0001F600",                     // a four byte sequence
+		"\U00020000",                     // CJK Extension B
+		"\U0010FFFF",                     // the highest code point
+		"\u0645\u0631\u062D\u0628\u0627", // right to left text, not reordered
 	}
-	if err := writeStream.SerializeWideString(&wide, 64); err != nil {
-		t.Fatal(err)
-	}
-	writeStream.Flush()
-	readStream := NewReadStream(writeStream.Data())
-	var readNarrow, readWide string
-	if err := readStream.SerializeString(&readNarrow, 64); err != nil {
-		t.Fatal(err)
-	}
-	if err := readStream.SerializeWideString(&readWide, 64); err != nil {
-		t.Fatal(err)
-	}
-	if readNarrow != narrow || readWide != wide {
-		t.Fatalf("control round trip changed: %q %q", readNarrow, readWide)
+	for _, text := range texts {
+		buffer := make([]byte, 72)
+		writeStream := NewWriteStream(buffer)
+		value := text
+		if err := writeStream.SerializeString(&value, 64); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+		readStream := NewReadStream(writeStream.Data())
+		var read string
+		if err := readStream.SerializeString(&read, 64); err != nil {
+			t.Fatalf("%q: %v", text, err)
+		}
+		if err := readStream.SerializeEnd(); err != nil {
+			t.Fatalf("%q: end: %v", text, err)
+		}
+		if read != text {
+			t.Fatalf("round trip changed the bytes: wrote %x, read %x", text, read)
+		}
 	}
 }
 
@@ -1820,7 +1625,7 @@ func TestUntil(t *testing.T) {
 func TestSentinelLoopTermination(t *testing.T) {
 	// a malicious packet of 0xFF bytes claims "another element follows" forever.
 	// because every successful serialize call consumes at least one bit, a Continue
-	// loop is bounded by the bit count of the packet and terminates with ErrOverflow.
+	// loop is bounded by the bit count of the packet and terminates with ErrPastEnd.
 	{
 		malicious := bytes.Repeat([]byte{0xFF}, 32)
 
@@ -1832,8 +1637,8 @@ func TestSentinelLoopTermination(t *testing.T) {
 			stream.SerializeBits(&item, 8)
 			iterations++
 		}
-		if !errors.Is(stream.Err(), ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", stream.Err())
+		if !errors.Is(stream.Err(), ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", stream.Err())
 		}
 		if iterations > len(malicious)*8 {
 			t.Fatalf("loop ran %d iterations, more than the bit count of the packet", iterations)
@@ -1862,13 +1667,13 @@ func TestSentinelLoopTermination(t *testing.T) {
 			var item uint32
 			stream.SerializeBits(&item, 32)
 		}
-		if !errors.Is(stream.Err(), ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", stream.Err())
+		if !errors.Is(stream.Err(), ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", stream.Err())
 		}
 	}
 
 	// a malicious packet of zero bytes claims "not done" forever. an Until loop is
-	// bounded by the bit count of the packet and terminates with ErrOverflow.
+	// bounded by the bit count of the packet and terminates with ErrPastEnd.
 	{
 		malicious := make([]byte, 32)
 
@@ -1880,8 +1685,8 @@ func TestSentinelLoopTermination(t *testing.T) {
 			stream.SerializeBits(&item, 8)
 			iterations++
 		}
-		if !errors.Is(stream.Err(), ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", stream.Err())
+		if !errors.Is(stream.Err(), ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", stream.Err())
 		}
 		if iterations > len(malicious)*8 {
 			t.Fatalf("loop ran %d iterations, more than the bit count of the packet", iterations)
@@ -1965,8 +1770,8 @@ func TestStreamReset(t *testing.T) {
 
 	// reset clears a latched error
 	readStream.Reset(buffer[:0])
-	if err := readStream.SerializeBits(&value, 1); !errors.Is(err, ErrOverflow) {
-		t.Fatal("expected ErrOverflow on empty buffer")
+	if err := readStream.SerializeBits(&value, 1); !errors.Is(err, ErrPastEnd) {
+		t.Fatal("expected ErrPastEnd on empty buffer")
 	}
 	readStream.Reset(writeStream.Data())
 	if readStream.Err() != nil {
@@ -2028,42 +1833,6 @@ func TestReadBits64MatchesSplitReads(t *testing.T) {
 					}
 				}
 			}
-		}
-	}
-}
-
-// TestWideStringLengthValidatedBeforeNarrowing pins the order of the wstring write side
-// check. The length is compared against the buffer size at the caller's own int width, and
-// only then narrows to the int32 the length field carries: a check placed after the
-// narrowing is handed a length the narrowing already made legal, so a string of 2^32 + 5
-// code units arrives as 5 and fits any buffer.
-//
-// Each out of range case carries its negative control, a length one step inside the
-// buffer, which must fit.
-func TestWideStringLengthValidatedBeforeNarrowing(t *testing.T) {
-	const bufferSize = 8
-
-	if !wideStringFits(bufferSize-1, bufferSize) {
-		t.Fatalf("a length of %d must fit a buffer of %d: it leaves room for the terminator",
-			bufferSize-1, bufferSize)
-	}
-	if wideStringFits(bufferSize, bufferSize) {
-		t.Fatalf("a length of %d must not fit a buffer of %d: the terminator has nowhere to go",
-			bufferSize, bufferSize)
-	}
-
-	// the lengths whose low 32 bits are in range while the value is not. int is 32 bits on
-	// a 32 bit platform, where utf16Length cannot return them and there is nothing to
-	// narrow.
-	if strconv.IntSize < 64 {
-		return
-	}
-	one := int64(1)
-	for _, wide := range []int64{one << 31, one<<32 + 5, one<<32 + bufferSize - 1} {
-		length := int(wide)
-		if wideStringFits(length, bufferSize) {
-			t.Fatalf("a length of %d must not fit a buffer of %d: the low 32 bits are in range and the value is not",
-				length, bufferSize)
 		}
 	}
 }

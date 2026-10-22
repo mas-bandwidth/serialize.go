@@ -1,9 +1,10 @@
 package serialize_test
 
 import (
+	"errors"
 	"fmt"
 
-	"github.com/mas-bandwidth/serialize.go"
+	"github.com/mas-bandwidth/serialize.go/v2"
 )
 
 // Use the bitpacker directly when you want full control over each bit.
@@ -123,6 +124,11 @@ func Example_variantSerialization() {
 	if err := received.Serialize(readStream); err != nil {
 		panic(err)
 	}
+	// a packet reader reads the end after the top level object: the packet must hold
+	// exactly the object, with zero padding in its final byte
+	if err := readStream.SerializeEnd(); err != nil {
+		panic(err)
+	}
 
 	fmt.Printf("%d.%d.%d.%d:%d\n", received.IPv4[0], received.IPv4[1], received.IPv4[2], received.IPv4[3], received.Port)
 
@@ -182,7 +188,7 @@ func ExampleContinue() {
 		readStream.SerializeBits(&item, 8)
 		received = append(received, item)
 	}
-	if err := readStream.Err(); err != nil {
+	if err := readStream.SerializeEnd(); err != nil {
 		panic(err)
 	}
 
@@ -215,10 +221,44 @@ func Example_unifiedSerialization() {
 	if err := received.Serialize(readStream); err != nil {
 		panic(err)
 	}
+	if err := readStream.SerializeEnd(); err != nil {
+		panic(err)
+	}
 
 	fmt.Println(received.Position, received.AtRest)
 
 	// Output:
 	// wrote 25 bytes
 	// {10 20 30} false
+}
+
+// Every refusal names the rule that refused it. A packet carries one object and its
+// end, so a byte left over after the object is refused at the end as trailing data,
+// even when it is zero.
+func ExampleRefusal() {
+	address := Address{Type: addressIPv4, IPv4: [4]uint8{127, 0, 0, 1}, Port: 40000}
+
+	writeStream := serialize.NewWriteStream(make([]byte, 64))
+	if err := address.Serialize(writeStream); err != nil {
+		panic(err)
+	}
+	writeStream.Flush()
+	packet := append(writeStream.Data(), 0) // one zero byte too many
+
+	var received Address
+	readStream := serialize.NewReadStream(packet)
+	if err := received.Serialize(readStream); err != nil {
+		panic(err)
+	}
+	err := readStream.SerializeEnd()
+
+	var refusal serialize.Refusal
+	if errors.As(err, &refusal) {
+		fmt.Println(refusal.String()) // the reason as STANDARD.md spells it
+	}
+	fmt.Println(errors.Is(err, serialize.ErrTrailingData))
+
+	// Output:
+	// trailing_data
+	// true
 }

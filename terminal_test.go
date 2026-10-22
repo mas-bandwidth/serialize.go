@@ -32,7 +32,7 @@ func TestFailureIsTerminal(t *testing.T) {
 				var v uint64
 				return r.SerializeBits64(&v, 33) // 33 bits wanted, 16 in the stream
 			},
-			want: ErrOverflow,
+			want: ErrPastEnd,
 		},
 		{
 			name:   "after partial consumption",
@@ -45,7 +45,7 @@ func TestFailureIsTerminal(t *testing.T) {
 				var v uint64
 				return r.SerializeBits64(&v, 33) // 33 bits wanted, 16 left
 			},
-			want: ErrOverflow,
+			want: ErrPastEnd,
 		},
 		{
 			name: "range headroom",
@@ -80,7 +80,7 @@ func TestFailureIsTerminal(t *testing.T) {
 				}
 				return r.SerializeAlign()
 			},
-			want: ErrAlign,
+			want: ErrNonzeroPadding,
 		},
 		{
 			name: "malformed string",
@@ -97,7 +97,56 @@ func TestFailureIsTerminal(t *testing.T) {
 				var s string
 				return r.SerializeString(&s, 16)
 			},
-			want: ErrValueOutOfRange,
+			want: ErrInvalidUTF8,
+		},
+		{
+			name: "embedded nul",
+			buffer: func() []byte {
+				return writeTerminalBuffer(t, func(w *WriteStream) {
+					length := uint32(2)
+					w.SerializeBits(&length, 4)
+					w.SerializeAlign()
+					payload := uint32(0x0061) // the bytes 61 00: a NUL among the payload
+					w.SerializeBits(&payload, 16)
+				})
+			},
+			provoke: func(t *testing.T, r *ReadStream) error {
+				var s string
+				return r.SerializeString(&s, 16)
+			},
+			want: ErrEmbeddedNul,
+		},
+		{
+			name:   "non-finite float",
+			buffer: func() []byte { return []byte{0x00, 0x00, 0xC0, 0x7F, 0xFF} }, // a quiet NaN, then a readable byte
+			provoke: func(t *testing.T, r *ReadStream) error {
+				var f float32
+				return r.SerializeFloat32(&f)
+			},
+			want: ErrNonFiniteFloat,
+		},
+		{
+			name:   "non-canonical int relative",
+			buffer: func() []byte { return []byte{0x40, 0x19, 0x00, 0x00, 0x00, 0xFF} }, // the absolute tier carrying 101
+			provoke: func(t *testing.T, r *ReadStream) error {
+				// six zero flags, then 101 as 32 raw bits: a difference of 1 from 100,
+				// which the one bit tier carries
+				var current int32
+				return r.SerializeIntRelative(100, &current)
+			},
+			want: ErrNonCanonical,
+		},
+		{
+			name:   "trailing data",
+			buffer: func() []byte { return []byte{0x05, 0x00} },
+			provoke: func(t *testing.T, r *ReadStream) error {
+				var v uint32
+				if err := r.SerializeBits(&v, 3); err != nil {
+					t.Fatalf("the first read must succeed: %v", err)
+				}
+				return r.SerializeEnd()
+			},
+			want: ErrTrailingData,
 		},
 		{
 			name:   "int relative",

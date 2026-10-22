@@ -10,7 +10,7 @@
 //
 // The sequence includes a degenerate range (min == max), which costs zero bits: it
 // must round trip across both languages while leaving every downstream field on
-// exactly the bit it was on before. It sits at serialize call 7 of 28, so 21 fields
+// exactly the bit it was on before. It sits at serialize call 7 of 29, so 22 calls
 // follow it -- the point is not that it is central but that a great many fields come
 // after it, every one of which would shift and fail the round trip if the degenerate
 // range ever started consuming bit space. That is why adding it did not change a
@@ -36,7 +36,7 @@ import (
 	"math"
 	"os"
 
-	"github.com/mas-bandwidth/serialize.go"
+	"github.com/mas-bandwidth/serialize.go/v2"
 )
 
 type compatData struct {
@@ -63,7 +63,7 @@ type compatData struct {
 	relativeFar          int32
 	bytes                [7]byte
 	str                  string
-	wstr                 string
+	text                 string
 	bits33               uint64
 	int64Full            int64
 	int64Range           int64
@@ -102,7 +102,7 @@ func initCompatData() compatData {
 		relativeFar:        2100, // difference of 2000 from the base: exercises the twelve bit bucket
 		bytes:              [7]byte{0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x01},
 		str:                "golden",
-		wstr:               "мир", // cyrillic, BMP only: representable on 2 byte wchar_t platforms too
+		text:               "мир", // cyrillic: two byte UTF-8 sequences, six bytes in an eight byte buffer
 		bits33:             0x1DEADBEEF,
 		int64Full:          -123456789012345,
 		int64Range:         4123456789,
@@ -164,10 +164,13 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 	stream.SerializeAlign()
 	stream.SerializeBytes(data.bytes[:])
 	stream.SerializeString(&data.str, 16)
-	stream.SerializeWideString(&data.wstr, 8)
+	stream.SerializeString(&data.text, 8)
 	stream.SerializeBits64(&data.bits33, 33)
 	stream.SerializeInt64(&data.int64Full, math.MinInt64, math.MaxInt64)
 	stream.SerializeInt64(&data.int64Range, -5000000000, +5000000000)
+	// the end of the object: nothing on write, and on read the stream must hold exactly
+	// the packet, with zero padding in its final byte (STANDARD.md end)
+	stream.SerializeEnd()
 	return stream.Err()
 }
 

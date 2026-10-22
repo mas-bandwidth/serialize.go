@@ -117,8 +117,8 @@ func TestSerializeUint128(t *testing.T) {
 	{
 		readStream := NewReadStream(make([]byte, 15))
 		var value Uint128
-		if err := readStream.SerializeUint128(&value); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeUint128(&value); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 }
@@ -288,8 +288,8 @@ func TestSerializeInt128(t *testing.T) {
 		var readBack Int128
 		fullMin := Uint128From64(1).Lsh(127).Int128()
 		fullMax := Uint128From64(1).Lsh(127).Not().Int128()
-		if err := readStream.SerializeInt128(&readBack, fullMin, fullMax); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeInt128(&readBack, fullMin, fullMax); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 
@@ -522,8 +522,8 @@ func TestSerializeFixedValidation(t *testing.T) {
 	{
 		readStream := NewReadStream(make([]byte, 2))
 		var value int64
-		if err := readStream.SerializeFixed64(&value, 48, 16, -100000000000, +100000000000); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeFixed64(&value, 48, 16, -100000000000, +100000000000); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 
@@ -711,8 +711,8 @@ func TestSerializeFixedWide(t *testing.T) {
 	{
 		readStream := NewReadStream(make([]byte, 4))
 		var value Int128
-		if err := readStream.SerializeFixed128(&value, 112, 16, -1152921504606846976, +1152921504606846976); !errors.Is(err, ErrOverflow) {
-			t.Fatalf("expected ErrOverflow, got %v", err)
+		if err := readStream.SerializeFixed128(&value, 112, 16, -1152921504606846976, +1152921504606846976); !errors.Is(err, ErrPastEnd) {
+			t.Fatalf("expected ErrPastEnd, got %v", err)
 		}
 	}
 }

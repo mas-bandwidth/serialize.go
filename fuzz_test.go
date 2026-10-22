@@ -2,6 +2,7 @@ package serialize
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -34,15 +35,19 @@ func FuzzReadStream(f *testing.F) {
 		_ = stream.SerializeIntRelative(100, &relative)
 		var str string
 		_ = stream.SerializeString(&str, 300)
-		var wstr string
-		_ = stream.SerializeWideString(&wstr, 300)
 		_ = stream.SerializeAlign()
 		buffer := make([]byte, 33)
 		_ = stream.SerializeBytes(buffer)
+		// floats off hostile bytes are finite or refused: the format carries no NaN
+		// and no infinity, whatever the bytes say
 		var f32 float32
-		_ = stream.SerializeCompressedFloat32(&f32, -1, 1, 0.001)
+		if stream.SerializeCompressedFloat32(&f32, -1, 1, 0.001) == nil && !float32BitsAreFinite(math.Float32bits(f32)) {
+			t.Fatalf("compressed float decoded a non-finite value: %#x", math.Float32bits(f32))
+		}
 		var f64 float64
-		_ = stream.SerializeFloat64(&f64)
+		if stream.SerializeFloat64(&f64) == nil && !float64BitsAreFinite(math.Float64bits(f64)) {
+			t.Fatalf("double decoded a non-finite value: %#x", math.Float64bits(f64))
+		}
 
 		// 128 bit and fixed point reads off hostile bytes must decode within their
 		// bounds or fail — never clamp, never wrap, never panic
@@ -90,6 +95,16 @@ func FuzzReadStream(f *testing.F) {
 		_ = stream.SerializeInt128(&full128,
 			Uint128From64(1).Lsh(127).Int128(),       // MinInt128
 			Uint128From64(1).Lsh(127).Not().Int128()) // MaxInt128
+
+		_ = stream.SerializeEnd()
+
+		// every refusal names its rule from the closed list
+		if err := stream.Err(); err != nil {
+			var refusal Refusal
+			if !errors.As(err, &refusal) || refusal.String() == "" {
+				t.Fatalf("the stream refused with %v, which names no reason", err)
+			}
+		}
 	})
 }
 
@@ -135,6 +150,24 @@ func FuzzRoundTrip(f *testing.F) {
 		}
 		if len(bulk) > 512 {
 			bulk = bulk[:512]
+		}
+
+		// float and double carry finite values only (format 2.0): the writer refuses
+		// NaN and the infinities, which is checked here, and the round trip carries
+		// the finite part of the fuzzer's space bit for bit
+		if !float32BitsAreFinite(math.Float32bits(f32)) {
+			probe := NewWriteStream(make([]byte, 8))
+			if err := probe.SerializeFloat32(&f32); !errors.Is(err, ErrNonFiniteFloat) {
+				t.Fatalf("the writer accepted the non-finite float %#x: %v", math.Float32bits(f32), err)
+			}
+			f32 = 0
+		}
+		if !float64BitsAreFinite(math.Float64bits(f64)) {
+			probe := NewWriteStream(make([]byte, 8))
+			if err := probe.SerializeFloat64(&f64); !errors.Is(err, ErrNonFiniteFloat) {
+				t.Fatalf("the writer accepted the non-finite double %#x: %v", math.Float64bits(f64), err)
+			}
+			f64 = 0
 		}
 
 		buffer := make([]byte, 2048)
@@ -199,6 +232,8 @@ func FuzzRoundTrip(f *testing.F) {
 		readStream.SerializeFixed128(&rWide, 112, 16, -1152921504606846976, +1152921504606846976)
 		var rInt128 Int128
 		readStream.SerializeInt128(&rInt128, int128Bound.Neg(), int128Bound)
+		// the stream holds exactly what was written, so its end must accept
+		readStream.SerializeEnd()
 		if err := readStream.Err(); err != nil {
 			t.Fatalf("read failed: %v", err)
 		}

@@ -1,6 +1,7 @@
 package serialize
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -9,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"unicode/utf16"
 )
 
 // The shared conformance corpus is the instrument STANDARD.md names: the vendored
@@ -48,11 +48,14 @@ type conformanceVector struct {
 	bytes           []byte
 	expectKind      expectKind
 	expect          string
+	reason          string // the refusal reason a refused vector states
 	consumed        int64
 	hasConsumed     bool
 	measureAtLeast  int64
 	hasMeasure      bool
 	writerCanonical bool
+	writerInput     uint32 // a compressed_float writer's input, as a float32 bit pattern
+	hasWriterInput  bool
 }
 
 func (v conformanceVector) where() string {
@@ -123,13 +126,21 @@ func parseConformanceFile(t *testing.T, path string) []conformanceVector {
 				current.bytes = append(current.bytes, byte(b))
 			}
 		case "expect":
-			if rest == "refused" {
+			if verdict, reason, _ := strings.Cut(rest, " "); verdict == "refused" {
+				// STANDARD.md, "Refusal reasons": every refused vector states the reason
+				// it expects, from the closed list, and a vector that states none or one
+				// outside the list is malformed rather than a weaker refusal
+				reason = strings.TrimSpace(reason)
+				if !isRefusalName(reason) {
+					t.Fatalf("%s:%d: expect refused needs a reason from the closed list, got %q", base, i+1, reason)
+				}
 				current.expectKind = expectRefused
+				current.reason = reason
 				break
 			}
 			kind, value, ok := strings.Cut(rest, "=")
 			if !ok {
-				t.Fatalf("%s:%d: expect needs `refused`, `value = ...` or `bits = ...`, got %q", base, i+1, rest)
+				t.Fatalf("%s:%d: expect needs `refused <reason>`, `value = ...` or `bits = ...`, got %q", base, i+1, rest)
 			}
 			switch strings.TrimSpace(kind) {
 			case "value":
@@ -159,12 +170,34 @@ func parseConformanceFile(t *testing.T, path string) []conformanceVector {
 				t.Fatalf("%s:%d: unknown writer mode %q", base, i+1, rest)
 			}
 			current.writerCanonical = true
+		case "writer_input":
+			kind, value, ok := strings.Cut(rest, "=")
+			if !ok || strings.TrimSpace(kind) != "bits" {
+				t.Fatalf("%s:%d: writer_input needs `bits = 0x...`, got %q", base, i+1, rest)
+			}
+			pattern, ok := parseVectorNumber(value)
+			if !ok || pattern.Hi != 0 || pattern.Lo > math.MaxUint32 {
+				t.Fatalf("%s:%d: writer_input %q is not a float32 bit pattern", base, i+1, value)
+			}
+			current.writerInput = uint32(pattern.Lo)
+			current.hasWriterInput = true
 		default:
 			t.Fatalf("%s:%d: unknown key %q", base, i+1, key)
 		}
 	}
 	flush()
 	return vectors
+}
+
+// isRefusalName reports whether a vector's stated reason is one of the closed list,
+// spelled exactly as STANDARD.md spells it.
+func isRefusalName(name string) bool {
+	for r := ErrPastEnd; r <= ErrNonCanonical; r++ {
+		if r.String() == name {
+			return true
+		}
+	}
+	return false
 }
 
 // parseVectorNumber reads a vector's number, which STANDARD.md's lexical rules make signed
@@ -230,8 +263,8 @@ const (
 	stepCompressedFloat
 	stepBytes
 	stepString
-	stepWideString
 	stepFixed
+	stepEnd
 	stepObject // opens a nested object over the steps that follow
 )
 
@@ -341,8 +374,8 @@ func (s *step) run(stream Stream) error {
 	case stepString:
 		return stream.SerializeString(&s.text, int(s.width))
 
-	case stepWideString:
-		return stream.SerializeWideString(&s.text, int(s.width))
+	case stepEnd:
+		return stream.SerializeEnd()
 
 	case stepFixed:
 		if s.integerBits+s.fractionBits <= 64 {
@@ -428,6 +461,8 @@ func stepFromWords(text string) (step, error) {
 		s.kind = stepBool
 	case words[0] == "align" && len(words) == 1:
 		s.kind = stepAlign
+	case words[0] == "end" && len(words) == 1:
+		s.kind = stepEnd
 	case words[0] == "float" && len(words) == 1:
 		s.kind = stepFloat
 	case words[0] == "double" && len(words) == 1:
@@ -474,12 +509,6 @@ func stepFromWords(text string) (step, error) {
 			return s, err
 		}
 		s.kind, s.width = stepString, int64(width.Lo)
-	case words[0] == "wstring" && len(words) == 2:
-		width, err := number(1)
-		if err != nil {
-			return s, err
-		}
-		s.kind, s.width = stepWideString, int64(width.Lo)
 	case (words[0] == "int" || words[0] == "int64" || words[0] == "int128") && len(words) == 3:
 		min, err := number(1)
 		if err != nil {
@@ -536,7 +565,7 @@ func operationTakesParam(operation, name string) bool {
 	case "count":
 		return operation == "bytes"
 	case "buffer_size":
-		return operation == "string" || operation == "wstring"
+		return operation == "string"
 	case "previous":
 		return operation == "int_relative"
 	case "res":
@@ -634,6 +663,8 @@ func buildSteps(vector conformanceVector) ([]step, error) {
 		s.kind = stepUint128
 	case "align":
 		s.kind = stepAlign
+	case "end":
+		s.kind = stepEnd
 	case "float":
 		s.kind = stepFloat
 	case "double":
@@ -685,12 +716,6 @@ func buildSteps(vector conformanceVector) ([]step, error) {
 			return nil, err
 		}
 		s.kind, s.width = stepString, int64(size.Lo)
-	case "wstring":
-		size, err := number("buffer_size")
-		if err != nil {
-			return nil, err
-		}
-		s.kind, s.width = stepWideString, int64(size.Lo)
 	case "fixed":
 		integerBits, err := number("integer_bits")
 		if err != nil {
@@ -722,24 +747,6 @@ func hexBytes(data []byte) string {
 	return strings.Join(parts, " ")
 }
 
-// hexCodeUnits renders a decoded wide string as the UTF-16 code units the corpus states.
-// STANDARD.md, "wstring": each 32 bit group carries one UTF-16 code unit, and a runtime
-// whose strings are not UTF-16 recombines surrogate pairs into code points on read. Go
-// strings are UTF-8, so a recombined astral code point is split again here and both
-// platforms compare the same text.
-func hexCodeUnits(text string) string {
-	parts := make([]string, 0, len(text))
-	for _, r := range text {
-		if r > 0xFFFF {
-			high, low := utf16.EncodeRune(r)
-			parts = append(parts, fmt.Sprintf("%04X", uint16(high)), fmt.Sprintf("%04X", uint16(low)))
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%04X", uint16(r)))
-	}
-	return strings.Join(parts, " ")
-}
-
 // renderStepValue renders a step's decoded value the way the corpus states it.
 func renderStepValue(s *step) string {
 	if s.valueIsNumeric() {
@@ -752,11 +759,9 @@ func renderStepValue(s *step) string {
 		return hexBytes(s.data)
 	case stepString:
 		return hexBytes([]byte(s.text))
-	case stepWideString:
-		return hexCodeUnits(s.text)
-	case stepAlign:
-		// align has no value of its own, and the corpus states the padding it consumed,
-		// which a conforming read always finds zero
+	case stepAlign, stepEnd:
+		// align and end have no value of their own, and the corpus states the padding
+		// they consumed, which a conforming read always finds zero
 		return "0"
 	}
 	return "-"
@@ -822,6 +827,19 @@ func checkTerminal(t *testing.T, vector conformanceVector, stream *ReadStream) {
 	}
 }
 
+// checkReason requires the stream's first refusal to carry the reason the vector states.
+func checkReason(t *testing.T, vector conformanceVector, stream *ReadStream) {
+	t.Helper()
+	var refusal Refusal
+	if !errors.As(stream.Err(), &refusal) {
+		t.Fatalf("%s: refused with %v, which names no reason, the corpus states %s",
+			vector.where(), stream.Err(), vector.reason)
+	}
+	if refusal.String() != vector.reason {
+		t.Fatalf("%s: refused as %s, the corpus states %s", vector.where(), refusal, vector.reason)
+	}
+}
+
 // The sentinels seed every scalar destination, and they must survive the narrowing this
 // runner performs on the way to each operation's own width, or a destination the library
 // correctly left alone still reads as written. A bit pattern kind takes one that fits 32
@@ -864,9 +882,15 @@ func runReader(t *testing.T, vector conformanceVector, steps []step, slack int) 
 			t.Fatalf("%s: the read succeeded, the corpus requires refusal", vector.where())
 		}
 
+		// STANDARD.md, "Refusal reasons": the refusal must name the rule the vector
+		// states, and a refusal for any other reason is a disagreement about the
+		// format however red the stream ends up. The stream's latched error is its
+		// FIRST refusal, which is the one compared.
+		checkReason(t, vector, stream)
+
 		// STANDARD.md, "A refused primitive read must leave its destination unwritten".
 		// The rule reaches the scalars only: a read into a caller-owned buffer, which is
-		// bytes, string and wstring, leaves that buffer's contents unspecified after a
+		// bytes and string, leaves that buffer's contents unspecified after a
 		// refusal, so those kinds are not checked here.
 		if s := state.failed; s != nil {
 			if s.valueIsNumeric() && s.pattern != sentinel(s.kind) {
@@ -894,6 +918,9 @@ func runReader(t *testing.T, vector conformanceVector, steps []step, slack int) 
 		// vector carries the terminality check and not only the sequences that spell a
 		// successor
 		checkTerminal(t, vector, stream)
+
+		// the later refusals were echoes: the stream still reports the first reason
+		checkReason(t, vector, stream)
 		return
 	}
 
@@ -950,6 +977,37 @@ func runWriter(t *testing.T, vector conformanceVector, steps []step) {
 	}
 }
 
+// runWriterInput is the writer input leg. A compressed_float vector carrying
+// `writer_input` hands the writer that float32 and requires the record's bytes exactly,
+// which is how the quantization arithmetic is pinned for values that do not decode back
+// to themselves. It runs on refused vectors too: what a reader does with the bytes does
+// not change what a writer owes for the input.
+func runWriterInput(t *testing.T, vector conformanceVector, steps []step) {
+	t.Helper()
+	last := len(steps) - 1
+	if steps[last].kind != stepCompressedFloat {
+		t.Fatalf("%s: writer_input is only meaningful on a compressed_float", vector.where())
+	}
+	steps = append([]step(nil), steps...)
+	for i := range steps {
+		if steps[i].kind == stepBits {
+			steps[i].pattern = Uint128{}
+		}
+	}
+	steps[last].pattern = Uint128{Lo: uint64(vector.writerInput)}
+	buffer := make([]byte, (len(vector.bytes)+64)/8*8+8)
+	stream := NewWriteStream(buffer)
+	state := &runState{}
+	if _, err := state.runSteps(stream, steps); err != nil {
+		t.Fatalf("%s: the writer refused the writer input: %v", vector.where(), err)
+	}
+	stream.Flush()
+	if emitted := stream.Data(); hexBytes(emitted) != hexBytes(vector.bytes) {
+		t.Fatalf("%s: handed 0x%08X the writer emitted %s, the corpus states %s",
+			vector.where(), vector.writerInput, hexBytes(emitted), hexBytes(vector.bytes))
+	}
+}
+
 // runMeasure is the measure leg. STANDARD.md makes a measure a BOUND and not the packet
 // size, so the corpus states a floor and the check is an inequality. The exact-from-zero
 // accounting the document calls non-conforming falls below it.
@@ -982,13 +1040,27 @@ func TestConformanceCorpus(t *testing.T) {
 
 	total := 0
 	writers := 0
+	writerInputs := 0
 	measures := 0
+	refused := 0
+	names := map[string]string{}
 	for _, file := range files {
 		for _, vector := range parseConformanceFile(t, file) {
 			if vector.operation == "" || vector.name == "" {
 				t.Fatalf("%s:%d: vector needs both an operation and a name", vector.file, vector.line)
 			}
+			// STANDARD.md, "The vector format": a name is unique across the corpus
+			if first, ok := names[vector.name]; ok {
+				t.Fatalf("%s: the name is already taken by the vector at %s", vector.where(), first)
+			}
+			names[vector.name] = fmt.Sprintf("%s:%d", vector.file, vector.line)
 			total++
+			if vector.expectKind == expectRefused {
+				refused++
+			}
+			if vector.hasWriterInput {
+				writerInputs++
+			}
 			if vector.writerCanonical {
 				writers++
 			}
@@ -996,13 +1068,7 @@ func TestConformanceCorpus(t *testing.T) {
 				measures++
 			}
 			t.Run(vector.operation+"/"+vector.name, func(t *testing.T) {
-				for _, param := range vector.paramNames {
-					if !operationTakesParam(vector.operation, param) {
-						t.Fatalf("%s: no runner for parameter %q on operation %q",
-							vector.where(), param, vector.operation)
-					}
-				}
-				steps, err := buildSteps(vector)
+				steps, err := vectorSteps(vector)
 				if err != nil {
 					// a corpus file this runner cannot drive is a gap in the runner and
 					// never a pass
@@ -1030,9 +1096,24 @@ func TestConformanceCorpus(t *testing.T) {
 						runMeasure(t, vector, steps)
 					}
 				}
+				if vector.hasWriterInput && !t.Failed() {
+					runWriterInput(t, vector, steps)
+				}
 			})
 		}
 	}
-	t.Logf("ran %d conformance vectors from %d files: %d writer checks, %d measure checks",
-		total, len(files), writers, measures)
+	t.Logf("ran %d conformance vectors from %d files: %d refused with a stated reason, %d writer checks, %d writer input checks, %d measure checks",
+		total, len(files), refused, writers, writerInputs, measures)
+}
+
+// vectorSteps is everything between a parsed record and a runnable step list: every
+// parameter the record states must be one its operation takes, and its operation and
+// steps must be ones this runner can drive. An error here is a red vector, never a skip.
+func vectorSteps(vector conformanceVector) ([]step, error) {
+	for _, param := range vector.paramNames {
+		if !operationTakesParam(vector.operation, param) {
+			return nil, fmt.Errorf("no runner for parameter %q on operation %q", param, vector.operation)
+		}
+	}
+	return buildSteps(vector)
 }

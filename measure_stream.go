@@ -1,5 +1,7 @@
 package serialize
 
+import "math"
+
 // MeasureStream counts how many bits it would take to serialize something, without
 // writing any data. It acts like a write stream (IsWriting is true), so a unified
 // serialize function measures the exact same fields it would write.
@@ -158,11 +160,23 @@ func (s *MeasureStream) SerializeUint64(value *uint64) error { return s.measure(
 // SerializeBool measures 1 bit.
 func (s *MeasureStream) SerializeBool(value *bool) error { return s.measure(1) }
 
-// SerializeFloat32 measures 32 bits.
-func (s *MeasureStream) SerializeFloat32(value *float32) error { return s.measure(32) }
+// SerializeFloat32 measures 32 bits. Like a write, the value must be finite or
+// ErrNonFiniteFloat is returned.
+func (s *MeasureStream) SerializeFloat32(value *float32) error {
+	if !float32BitsAreFinite(math.Float32bits(*value)) {
+		return s.fail(ErrNonFiniteFloat)
+	}
+	return s.measure(32)
+}
 
-// SerializeFloat64 measures 64 bits.
-func (s *MeasureStream) SerializeFloat64(value *float64) error { return s.measure(64) }
+// SerializeFloat64 measures 64 bits. Like a write, the value must be finite or
+// ErrNonFiniteFloat is returned.
+func (s *MeasureStream) SerializeFloat64(value *float64) error {
+	if !float64BitsAreFinite(math.Float64bits(*value)) {
+		return s.fail(ErrNonFiniteFloat)
+	}
+	return s.measure(64)
+}
 
 // SerializeCompressedFloat32 measures the bits required for the quantized range. It
 // derives the wire constants with CompressedFloatParams, exactly like the write and
@@ -213,29 +227,14 @@ func (s *MeasureStream) SerializeString(value *string, bufferSize int) error {
 	return s.measure(int64(length) * 8)
 }
 
-// SerializeWideString measures the length prefix plus 32 bits per UTF-16 code unit —
-// astral code points cost two units, exactly as the write stream splits them. Like a
-// write, the string must fit in bufferSize-1 code units or ErrValueOutOfRange is
-// returned.
-func (s *MeasureStream) SerializeWideString(value *string, bufferSize int) error {
-	validateBufferSize(bufferSize)
-	if s.err != nil {
-		return s.err
-	}
-	units := utf16Length(*value)
-	if !wideStringFits(units, bufferSize) {
-		return s.fail(ErrValueOutOfRange)
-	}
-	length := int32(units)
-	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
-		return err
-	}
-	return s.measure(int64(length) * 32)
-}
-
 // SerializeAlign measures the conservative worst case align of 7 bits.
 func (s *MeasureStream) SerializeAlign() error {
 	return s.measure(int64(s.AlignBits()))
+}
+
+// SerializeEnd measures the end of the object, which costs nothing.
+func (s *MeasureStream) SerializeEnd() error {
+	return s.err
 }
 
 // SerializeObject measures an object that implements Serializer.

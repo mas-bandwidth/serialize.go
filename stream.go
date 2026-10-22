@@ -89,10 +89,14 @@ type Stream interface {
 	// SerializeBool serializes a boolean value with one bit.
 	SerializeBool(value *bool) error
 
-	// SerializeFloat32 serializes an uncompressed 32 bit floating point value.
+	// SerializeFloat32 serializes an uncompressed 32 bit floating point value. The
+	// format carries finite values only: NaN and the infinities fail with
+	// ErrNonFiniteFloat on write and on read. Negative zero and the subnormals travel
+	// bit exact.
 	SerializeFloat32(value *float32) error
 
-	// SerializeFloat64 serializes an uncompressed 64 bit floating point value.
+	// SerializeFloat64 serializes an uncompressed 64 bit floating point value, finite
+	// only, exactly as SerializeFloat32.
 	SerializeFloat64(value *float64) error
 
 	// SerializeCompressedFloat32 serializes a floating point value in [min,max] with the
@@ -120,22 +124,21 @@ type Stream interface {
 	// its terminating null character must fit into the buffer, keeping streams
 	// compatible between the two languages. The payload is well-formed UTF-8 with no
 	// interior NUL: the writer's contract (STANDARD.md string), and enforced on read —
-	// a read of a violating payload fails with ErrValueOutOfRange. Arbitrary byte
-	// payloads belong to SerializeBytes.
+	// a read of a payload holding a zero byte fails with ErrEmbeddedNul, and one that
+	// is not well-formed UTF-8 with ErrInvalidUTF8. Arbitrary byte payloads belong to
+	// SerializeBytes.
 	SerializeString(value *string, bufferSize int) error
-
-	// SerializeWideString serializes a string as 32 bits per UTF-16 code unit, wire
-	// compatible with serialize_wstring in the C++ library: astral code points are
-	// split into surrogate pairs on write and recombined on read, so every platform
-	// produces identical bytes (STANDARD.md). The length is serialized in
-	// [0,bufferSize-1] code units. The payload is well-formed UTF-16 with no interior
-	// NUL, enforced on read: groups that are not UTF-16 code units (values above
-	// 0xFFFF), unpaired surrogates, and zero groups fail with ErrValueOutOfRange.
-	SerializeWideString(value *string, bufferSize int) error
 
 	// SerializeAlign pads the stream with zero bits to the next byte boundary. On read
 	// the padding is verified to be zero.
 	SerializeAlign() error
+
+	// SerializeEnd serializes the end of the object. A writer's end emits nothing and a
+	// measure's costs nothing; a reader's end refuses a whole byte or more after the
+	// object with ErrTrailingData, and a set bit in the final byte's padding with
+	// ErrNonzeroPadding. A packet reader must call it after the last field of the
+	// packet's top level object, with the stream holding exactly the packet bytes.
+	SerializeEnd() error
 
 	// SerializeObject serializes an object that implements Serializer.
 	SerializeObject(object Serializer) error
@@ -262,7 +265,24 @@ var intRelativeBuckets = [...]struct{ min, max uint32 }{
 	{7, 23},
 	{24, 280},
 	{281, 4377},
-	{4378, 69914},
+	{4378, intRelativeBoundedMax},
+}
+
+// intRelativeBoundedMax is the largest difference a bounded int_relative tier carries.
+// The absolute tier carries only differences above it: an absolute tier carrying one at
+// or below it is non canonical, and the reader refuses it.
+const intRelativeBoundedMax = 69914
+
+// float32BitsAreFinite reports whether a float32 bit pattern is a finite value: its
+// exponent field is not all ones, which is what NaN with any payload and both
+// infinities share. The test is on the raw bits, never a converted value.
+func float32BitsAreFinite(bits uint32) bool {
+	return bits&0x7F800000 != 0x7F800000
+}
+
+// float64BitsAreFinite is float32BitsAreFinite for a float64 bit pattern.
+func float64BitsAreFinite(bits uint64) bool {
+	return bits&0x7FF0000000000000 != 0x7FF0000000000000
 }
 
 // CompressedFloatParams derives the compressed float wire constants from a
@@ -284,8 +304,10 @@ var intRelativeBuckets = [...]struct{ min, max uint32 }{
 // The quantized range is clamped so it always fits in a uint32, even for pathological
 // delta / resolution ratios; the !>= form of the clamp also catches NaN. A declaration
 // with min >= max or resolution <= 0 is API misuse and panics; a declaration whose
-// delta, or delta / resolution, is not finite in float32 is non-conforming
-// (STANDARD.md) and has no wire meaning.
+// delta, delta / resolution, or top decode (min + delta, rounded once) is not finite in
+// float32 is non-conforming (STANDARD.md) and has no wire meaning. The write stream
+// panics on a top decode that is not finite; the read stream refuses any decode that
+// is not finite with ErrNonFiniteFloat.
 func CompressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32, bits int, delta float32) {
 	if !(min < max) || !(resolution > 0) {
 		panic(panicFloatParams)
@@ -331,33 +353,6 @@ func validateBufferSize(bufferSize int) {
 	if bufferSize < 1 || int64(bufferSize) > math.MaxInt32 {
 		panic(panicBufferSize)
 	}
-}
-
-// utf16Length returns the number of UTF-16 code units needed to encode the string:
-// one per basic-plane code point, two (a surrogate pair) per astral code point. This
-// is the wstring wire length — STANDARD.md pins each 32 bit group as one UTF-16 code
-// unit — and it matches wcslen on a 2 byte wchar_t platform. No allocation.
-func utf16Length(value string) int {
-	length := 0
-	for _, r := range value {
-		length++
-		if r >= 0x10000 {
-			length++ // astral code points split into a surrogate pair on the wire
-		}
-	}
-	return length
-}
-
-// wideStringFits reports whether a wide string of length UTF-16 code units fits a wstring
-// field declared with the given buffer size, which must leave room for the terminator the
-// wire does not carry.
-//
-// The comparison runs at the caller's own int width, before the length narrows to the
-// int32 the length field is written in. A comparison placed after the narrowing is handed
-// a length the narrowing already made legal: a string of 2^32 + 5 code units arrives as 5,
-// which fits any buffer, and the check that exists to refuse it cannot see it.
-func wideStringFits(length, bufferSize int) bool {
-	return length < bufferSize
 }
 
 // fixedPointCapacity returns the whole unit bounds a Q format with the given number
