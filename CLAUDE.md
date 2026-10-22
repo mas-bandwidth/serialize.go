@@ -2,7 +2,8 @@
 ## HOT — read before reasoning about this repo
 
 WHAT: pure Go port of the C++ serialize library (mas-bandwidth/serialize, NORMATIVE).
-Module `github.com/mas-bandwidth/serialize.go`, package `serialize`. Not the C++ repo,
+Module `github.com/mas-bandwidth/serialize.go/v2` since v2.0.0 (format 2.0), package
+`serialize`; v1.x releases live at the path without /v2. Not the C++ repo,
 not serialize.rs, not serialize.modern.
 
 NAME: the package is `serialize`, not `serializego` — deliberate, for short call sites
@@ -21,7 +22,8 @@ neither is redundant. See docs/reading_untrusted_data.md.
 
 INVARIANTS
 - **The wire format is frozen and bit-identical to the C++ library.**
-  `TestGoldenWireFormat` pins 112 bytes copied verbatim from the C++ test suite, and the
+  `TestGoldenWireFormat` pins the 106 byte whole message STANDARD.md prints (the C++
+  golden bytes too), and the
   cppcompat CI job round-trips the `compat/` harness against the real C++ library
   (pinned serialize.h) on every push and PR — both directions must decode each other.
   Never change an encoding without coordinating with C++. New features get ported from
@@ -34,12 +36,24 @@ INVARIANTS
   is caller state, not wire data: outside the domain 0..2147483647 it panics too, so never
   pass a value you just read off the wire.
 - **Zero allocations on every serialization path EXCEPT a read that constructs a string.**
-  SerializeString allocates only when the content changed; SerializeWideString allocates
-  per read (it decodes UTF-16 groups into a Go string). Everything else allocates nothing.
-- **STANDARD.md and conformance/ are VENDORED VERBATIM** from mas-bandwidth/serialize; the
-  spec-sync and corpus-sync CI jobs fail on drift. This library implements FORMAT VERSION
-  1.1. TestConformanceCorpus runs every corpus vector through the read stream and never
-  computes an expectation of its own.
+  SerializeString allocates only when the content changed. Everything else allocates
+  nothing.
+- **STANDARD.md, conformance/ and conformance-controls/ are VENDORED VERBATIM** from
+  mas-bandwidth/serialize (tools/revendor.sh <tag>); the spec-sync and corpus-sync CI jobs
+  fail on drift. This library implements FORMAT VERSION 2.0: the wire carries only
+  integers and bytes, and every value has exactly one encoding. TestConformanceCorpus runs
+  every corpus vector through the read stream, requires each refusal's REASON, and never
+  computes an expectation of its own; TestConformanceControls holds one sabotaged reader
+  per refusal rule to exactly its conformance-controls/<rule>.expected list.
+- **Format 2.0 (2026-10-22)**: float/double are finite only (refused on read AND write as
+  ErrNonFiniteFloat; -0 and subnormals bit exact); a non-finite compressed float decode is
+  refused, and a declaration whose top decodes to inf panics on write; wstring is GONE;
+  SerializeEnd refuses ErrTrailingData then ErrNonzeroPadding and a packet reader must
+  call it; int_relative's absolute tier refuses a bounded difference as ErrNonCanonical.
+  Every error the library returns is a `Refusal` whose String is the STANDARD.md
+  spelling. Do not reintroduce NaN transparency or wstring. Each read side rule lives in
+  exactly ONE place, because controls_test.go patches that one line: move a rule and its
+  needle moves with it.
 - **Write buffers must be a multiple of 8 bytes** (the writer stores qwords). The reader
   accepts any length and detects backing-array slack via `cap()` for branchless window
   loads — 8 bytes for the 32-bit path, 12 for the fused 64-bit path; slack bytes are
@@ -62,8 +76,8 @@ published only under serialize.go.
 ## Invariants — never break these
 
 1. **The wire format is frozen and bit-identical to the C++ library.**
-   `TestGoldenWireFormat` pins 112 golden bytes copied verbatim from the C++ test
-   suite, and the cppcompat CI job round trips the `compat/` harness
+   `TestGoldenWireFormat` pins the 106 byte whole message STANDARD.md prints, which
+   the C++ test suite pins too, and the cppcompat CI job round trips the `compat/` harness
    against the real C++ library (pinned serialize.h) on every push and PR: the Go
    and C++ streams must be byte identical and each side must decode the other's.
    Never change any encoding without
@@ -94,8 +108,8 @@ published only under serialize.go.
 4. **Zero allocations on all serialization paths, except a read that constructs a
    string.** `TestSerializeStringReadEqualContentDoesNotAllocate` (serialize_test.go)
    asserts with `testing.AllocsPerRun` that SerializeString allocates nothing when the
-   content is unchanged; it allocates one string when the content differs, and
-   SerializeWideString allocates per read. The README says so in the same words.
+   content is unchanged; it allocates one string when the content differs. The README
+   says so in the same words.
 5. **Write buffers must be multiples of 8 bytes** (the writer stores qwords). The
    reader accepts any length and detects backing-array slack via cap() to use fully
    branchless window loads (8 bytes for the 32-bit path, 12 for the fused 64-bit path);
@@ -116,12 +130,19 @@ published only under serialize.go.
 - `int128_test.go` — 128 bit pair known-answer tests + differentials against math/big
 - `fixed_test.go` — fixed point + 128 bit stream tests, golden pins derived from STANDARD.md
 - `fuzz_test.go`, `example_test.go` (examples ported from example.cpp)
+- `format2_test.go` — the format 2.0 rules no corpus read can see: the reason spellings,
+  the finite rule on write and measure, the compressed float declaration check, the
+  writer's and measure's end
+- `controls_test.go` — the negative controls: the unknown operation, and one sabotaged
+  reader per refusal rule (a needle and patch over a scratch copy of the package, run
+  with `go test -json`), each held to its vendored .expected list; skipped under -short
 - `compat/` — cross language wire compat harness (`main.go` + `cpp/compat.cpp`, kept
   in lockstep), run by the cppcompat CI job
 - `docs/` — the full treatment of reading untrusted data; the README keeps a
   condensed version that links here
-- `STANDARD.md`, `conformance/` — vendored verbatim from mas-bandwidth/serialize, kept
-  honest by the spec-sync and corpus-sync CI jobs; `conformance_test.go` runs the corpus
+- `STANDARD.md`, `conformance/`, `conformance-controls/` — vendored verbatim from
+  mas-bandwidth/serialize by `tools/revendor.sh <tag>`, kept honest by the spec-sync and
+  corpus-sync CI jobs; `conformance_test.go` runs the corpus
 - `terminal_test.go` — the terminal-failure latch, one case per failure shape
 - `degenerate_test.go` — the zero-bit degenerate range on every width
 
@@ -170,7 +191,9 @@ actions/cache. Dependabot bumps action versions weekly.
 - Method names mirror the C++ API (SerializeBits, SerializeInt, SerializeAlign...);
   accessors follow Go stdlib conventions (`Err()` not `Error()`, no Get prefixes);
   single-method interfaces use -er (`Serializer`).
-- Errors are the sentinels ErrOverflow, ErrValueOutOfRange, ErrAlign — no allocation.
+- Errors are the `Refusal` constants, one per STANDARD.md reason (ErrPastEnd,
+  ErrValueOutOfRange, ErrNonzeroPadding, ErrTrailingData, ErrNonFiniteFloat,
+  ErrInvalidUTF8, ErrEmbeddedNul, ErrNonCanonical) — comparable values, no allocation.
 - On read failure values are left unmodified (matches C++; documented).
 - Comment style follows the C++ library's voice; doc comments explain contracts.
 - gofmt, not gofumpt: gofumpt was evaluated and rejected because it explodes the
@@ -191,9 +214,14 @@ crediting/FUNDING, v1.6.0 fixed point + 128 bit integers ported from serialize.h
 string fast paths and the vendored STANDARD.md, v1.7.0 relicense back to BSD
 3-Clause (license changes are tagged as minor here) + ignore tending/, v1.8.0
 the degenerate range (min == max) costs zero bits — nine guards relaxed from
-min >= max to min > max + the STANDARD.md int_relative ladder fix. Tags up
+min >= max to min > max + the STANDARD.md int_relative ladder fix. v2.0.0 format 2.0
+(the serialize v2.0.0 standard and corpus): a MAJOR version, so the module path gained
+/v2 (Go semantic import versioning: a v2 tag on the bare path is not fetchable), the
+v1 retractions stay in v1's go.mod, wstring removed, SerializeEnd added to Stream, the
+errors became Refusal values. Release order is release-check.yml's: dispatch it on main
+at the release commit, green, THEN tag (the tag push is the publish), then prime the proxy. Tags up
 to v1.2.3 predate the rename and declare the goserialize module path, so they are
 not fetchable as serialize.go — v1.3.0 is the first valid version of the new path
 (gorelease/apicompat cannot compare against the pre-rename tags). After
 tagging, prime the
-module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/serialize.go/@v/<tag>.info`.
+module proxy: `curl https://proxy.golang.org/github.com/mas-bandwidth/serialize.go/v2/@v/<tag>.info`.

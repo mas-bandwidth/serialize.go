@@ -344,35 +344,6 @@ func TestDegenerateStringBufferSize(t *testing.T) {
 		}
 	})
 
-	t.Run("wstring", func(t *testing.T) {
-		buffer := make([]byte, 64)
-
-		w := NewWriteStream(buffer)
-		v := ""
-		if err := w.SerializeWideString(&v, 1); err != nil {
-			t.Fatalf("write empty wstring at bufferSize 1: %v", err)
-		}
-		if got := w.BitsProcessed(); got != 0 {
-			t.Errorf("empty wstring at bufferSize 1 wrote %d bits, want 0", got)
-		}
-		w.Flush()
-
-		r := NewReadStream(buffer[:8])
-		out := "poisoned"
-		if err := r.SerializeWideString(&out, 1); err != nil {
-			t.Fatalf("read empty wstring at bufferSize 1: %v", err)
-		}
-		if out != "" {
-			t.Errorf("read back %q, want the empty string", out)
-		}
-
-		w2 := NewWriteStream(make([]byte, 64))
-		nonEmpty := "x"
-		if err := w2.SerializeWideString(&nonEmpty, 1); !errors.Is(err, ErrValueOutOfRange) {
-			t.Errorf("non-empty wstring at bufferSize 1: got %v, want ErrValueOutOfRange", err)
-		}
-	})
-
 	// 0 stays misuse: it cannot express any length range
 	t.Run("zero still panics", func(t *testing.T) {
 		defer func() {

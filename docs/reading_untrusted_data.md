@@ -1,6 +1,6 @@
 # Reading untrusted data
 
-Packets come from the network and can be truncated or maliciously crafted. Every read is bounds checked and range validated, and the first failure latches an error on the stream: from then on every serialize call is a no-op that returns the same error and **leaves values unmodified**.
+Packets come from the network and can be truncated or maliciously crafted. Every read is bounds checked and range validated, and the first failure latches an error on the stream: from then on every serialize call is a no-op that returns the same error and **leaves values unmodified**. The error is a `serialize.Refusal` that names the rule that refused the packet, from the closed list in STANDARD.md, and the stream keeps the first one: the refusals of later calls are its echoes.
 
 A failure is terminal, as the wire format requires: nothing after a failed read has a defined position, so nothing after it is interpretable. Only `Reset` — pointing the stream at a new buffer — clears the latch. The one value a refused read does not promise to leave alone is a caller-owned byte slice passed to `SerializeBytes`: treat its contents as unspecified after a failure.
 
@@ -64,3 +64,19 @@ for i := int32(0); i < numItems; i++ {
 ```
 
 Every successful serialize call consumes at least one bit, so any loop that follows these rules is bounded by the size of the packet. Nested objects are already safe: `SerializeObject` refuses to descend into an object once the stream has an error.
+
+## The end of the packet
+
+A packet is one object and its end. After the last field of the top level object, call `SerializeEnd` on the read stream, which must hold exactly the packet:
+
+```go
+readStream := serialize.NewReadStream(packet)
+if err := message.Serialize(readStream); err != nil {
+    return err
+}
+if err := readStream.SerializeEnd(); err != nil {
+    return err // ErrTrailingData or ErrNonzeroPadding
+}
+```
+
+A whole byte or more left over is refused with `ErrTrailingData`, even when it is zero, and a set bit in the final byte's unused bits with `ErrNonzeroPadding`. Without the end those bits are never examined, so two different packets would decode to the same value and the format's guarantee, one value with exactly one byte sequence, would not hold for your reads. The end writes nothing and measures nothing, so it can live in a unified serialize function for the whole packet, though never in one that is nested with `SerializeObject`.

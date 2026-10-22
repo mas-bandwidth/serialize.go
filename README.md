@@ -1,14 +1,23 @@
 # Introduction
 
-[![CI](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mas-bandwidth/serialize.go.svg)](https://pkg.go.dev/github.com/mas-bandwidth/serialize.go)
+[![CI](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml/badge.svg)](https://github.com/mas-bandwidth/serialize.go/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/mas-bandwidth/serialize.go/v2.svg)](https://pkg.go.dev/github.com/mas-bandwidth/serialize.go/v2)
 
 ![serialize.go logo with a packed row of colored blocks](images/serialize.png)
 
 **serialize.go** is a simple bitpacking serializer for Go.
 
-It is a pure Go port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library, with no native code. The two libraries produce bit-for-bit identical output, so streams written by one language can be read by the other. This is pinned down by a golden wire format test whose bytes are copied verbatim from the C++ test suite.
+It is a pure Go port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library, with no native code. The two libraries produce bit-for-bit identical output, so streams written by one language can be read by the other. This is pinned down by a golden wire format test whose bytes are the whole message STANDARD.md prints, the same bytes the C++ test suite pins.
 
-The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbatim from the [serialize](https://github.com/mas-bandwidth/serialize) repository along with the shared conformance corpus in [conformance/](conformance); CI fails if either copy drifts from upstream. **This library implements format version 1.1.** Every vector in the corpus runs through the read stream in `TestConformanceCorpus`, which discovers the directory rather than naming its files: a vector whose operation it cannot drive fails the run. Vectors marked `writer = canonical` are re-emitted through the write stream and compared byte for byte, and vectors carrying `measure_at_least` are checked against the measure stream's floor.
+The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbatim from the [serialize](https://github.com/mas-bandwidth/serialize) repository along with the shared conformance corpus in [conformance/](conformance); CI fails if any copy drifts from upstream. **This library implements format version 2.0**: the wire carries only integers and bytes, and every value has exactly one encoding. Every vector in the corpus runs through the read stream in `TestConformanceCorpus`, which discovers the directory rather than naming its files: a vector whose operation it cannot drive fails the run, and a refused vector must be refused for the reason it states. Vectors marked `writer = canonical` are re-emitted through the write stream and compared byte for byte, vectors carrying `writer_input` hand the writer that input and compare its bytes, and vectors carrying `measure_at_least` are checked against the measure stream's floor. `TestConformanceControls` proves the runner responds: for each refusal rule it runs a reader with that one rule deleted against the corpus, and requires it to fail exactly the vectors [conformance-controls/](conformance-controls) names.
+
+Format 2.0 is a major version of this module, `github.com/mas-bandwidth/serialize.go/v2`. What changed from 1.1, and what it breaks:
+
+* `float` and `double` carry finite values only. NaN and the infinities are refused on read with `ErrNonFiniteFloat`, and refused on write too. Negative zero and the subnormals travel bit exact.
+* A `compressed_float` decode that is not finite is refused with `ErrNonFiniteFloat`, and a declaration whose top decodes to an infinity panics on write.
+* `SerializeWideString` is gone. Text travels as `SerializeString`, which is UTF-8.
+* `SerializeEnd` is new, on every stream and on the `Stream` interface. A packet reader calls it after the top level object: it refuses a byte left over with `ErrTrailingData` and a set padding bit with `ErrNonzeroPadding`.
+* `int_relative`'s absolute tier carrying a difference a bounded tier takes is refused with `ErrNonCanonical`.
+* Every refusal names its rule. The errors are values of type `Refusal`, one per reason in STANDARD.md's closed list, and `Refusal.String` spells the reason exactly as the standard does (`past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`). `ErrOverflow` is now `ErrPastEnd` and `ErrAlign` is now `ErrNonzeroPadding`; a string with a NUL is `ErrEmbeddedNul` and one that is not UTF-8 is `ErrInvalidUTF8`, where 1.1 said `ErrValueOutOfRange` for both.
 
 It has the following features:
 
@@ -20,8 +29,8 @@ It has the following features:
 * Serialize 128 bit integers: `Uint128` raw at a full 128 bits, `Int128` ranged in only the bits its range needs — and where that range fits 64 bits the bytes are identical to `SerializeInt64`
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
-* Zero allocations on every serialization path, except the read paths that construct a string: `SerializeString` and `SerializeWideString` allocate the value they hand back when its content changed
-* Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking
+* Zero allocations on every serialization path, except a read that constructs a string: `SerializeString` allocates the value it hands back when its content changed
+* Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking, and every error names the rule that refused the packet
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 
@@ -31,7 +40,7 @@ The module is published on the Go module proxy under its import path, so it
 installs like any other Go dependency:
 
 ```
-go get github.com/mas-bandwidth/serialize.go
+go get github.com/mas-bandwidth/serialize.go/v2
 ```
 
 That resolves the newest release. Append `@` and a tag to pin a specific one.
@@ -41,7 +50,7 @@ line above is checked on every push and every night rather than claimed.
 The package name is `serialize`, so no import alias is needed:
 
 ```go
-import "github.com/mas-bandwidth/serialize.go"
+import "github.com/mas-bandwidth/serialize.go/v2"
 ```
 
 You can use the bitpacker directly:
@@ -119,10 +128,13 @@ if err := body.Serialize(writeStream); err != nil {
 writeStream.Flush()
 packet := writeStream.Data()
 
-// read
+// read: the object, then its end, which refuses trailing bytes and set padding
 readStream := serialize.NewReadStream(packet)
 if err := body.Serialize(readStream); err != nil {
     // packet is truncated, corrupt or malicious
+}
+if err := readStream.SerializeEnd(); err != nil {
+    // packet carries more than the object
 }
 
 // measure
@@ -131,13 +143,15 @@ body.Serialize(measureStream)
 bytesRequired := measureStream.BytesProcessed()
 ```
 
+A packet reader must read the end after the top level object (STANDARD.md, "end"). Without it, trailing bytes and padding go unexamined, and one value no longer has exactly one byte sequence. The end writes nothing and measures nothing, so a unified serialize function for a whole packet can carry it too.
+
 Errors are sticky: the first failure latches on the stream and every later serialize call returns it without touching the stream. That is why serialize functions can simply call one serialize method per field and return `stream.Err()` at the end — or check every call, if you prefer early exits.
 
 If you want separate read and write functions instead of unified ones, use the concrete `*ReadStream` and `*WriteStream` types directly: they have the same methods as the `Stream` interface, with no dynamic dispatch.
 
 # Reading untrusted data
 
-Packets come from the network and can be truncated or maliciously crafted. Every read is bounds checked and range validated, and the first failure latches an error on the stream: from then on every serialize call is a no-op that returns the same error and **leaves values unmodified**.
+Packets come from the network and can be truncated or maliciously crafted. Every read is bounds checked and range validated, and the first failure latches an error on the stream: from then on every serialize call is a no-op that returns the same error and **leaves values unmodified**. The error is a `serialize.Refusal` naming the rule that refused the packet, and the stream keeps the first one: later refusals are its echoes.
 
 A failure is terminal, as the wire format requires: nothing after a failed read has a defined position, so nothing after it is interpretable. Only `Reset` — pointing the stream at a new buffer — clears the latch. The one value a refused read does not promise to leave alone is a caller-owned byte slice passed to `SerializeBytes`: treat its contents as unspecified after a failure.
 
@@ -172,7 +186,7 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 # Performance
 
-All serialization paths are zero allocation, with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing, and `SerializeWideString` allocates per read because it decodes UTF-16 groups into a Go string. Everything else — every integer, float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
+All serialization paths are zero allocation, with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing. Everything else — every integer, float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 # Limitations
 
@@ -180,7 +194,8 @@ All serialization paths are zero allocation, with one exception: a read that con
 * Read buffers may be any number of bytes. For the fastest reads, keep at least 12 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and takes one branch per window load, selecting the window source: with slack, every load comes straight from the buffer; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted. (This number is 12 since v1.14.0 and was 7 through v1.13.0, because the 64 bit window load now reaches twelve bytes.)
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
 * `SerializeIntRelative` works in the `int_relative` domain, 0 to 2147483647 (STANDARD.md). `previous` is your own state and never arrives off the wire, so a negative `previous` is API misuse and panics. On read the reconstruction is checked in every tier: a value that leaves the domain, or that does not exceed `previous`, fails with `ErrValueOutOfRange` and leaves the destination unwritten.
-* `SerializeWideString` stores 32 bits per UTF-16 code unit and is wire compatible with `serialize_wstring` in the C++ library: astral code points are split into surrogate pairs on write and recombined on read, so every platform produces identical bytes (STANDARD.md). Groups that are not UTF-16 code units (values above 0xFFFF) and unpaired surrogates fail on read.
+* `SerializeIntRelative`'s absolute tier carries only differences above 69914, the last bounded tier's top: one that carries a smaller difference has a second encoding, and fails with `ErrNonCanonical`.
+* `SerializeString` carries well-formed UTF-8 with no NUL, and hands a well-formed payload back byte for byte: no normalization, no replacement character, no stripped byte order mark. The writer trusts its caller, as it does for every value: it does not scan the string, so a string that breaks the rule is refused by the reader on the far side (`ErrEmbeddedNul`, `ErrInvalidUTF8`).
 
 # Author
 

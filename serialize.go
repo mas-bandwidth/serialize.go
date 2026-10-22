@@ -34,10 +34,13 @@
 //
 // The wire format is specified in STANDARD.md, vendored verbatim from the C++ repository
 // along with the shared conformance corpus in conformance/. This package implements format
-// version 1.1.
+// version 2.0: the wire carries only integers and bytes, and every value has exactly one
+// encoding.
 //
 // Values read from a stream are untrusted network data: every read is bounds checked and
-// range validated, and the first failure latches an error on the stream. The failure is
+// range validated, and the first failure latches an error on the stream, a Refusal that
+// names the rule that refused it. A packet reader reads the top level object and then
+// calls SerializeEnd, which refuses trailing bytes and set padding in the final byte. The failure is
 // terminal, as the format requires, and only ReadStream.Reset clears it. Serialize methods
 // return that error and become no-ops once it is set, so you can either check each call or
 // serialize an entire object and check Stream.Err once at the end — with one rule: a value
@@ -47,41 +50,98 @@
 // error on serialized loop counts.
 package serialize
 
-import (
-	"errors"
-	"math/bits"
-)
+import "math/bits"
 
-var (
-	// ErrOverflow is returned when a read would go past the end of the buffer, or a write
+// Refusal names the rule that refused a read, from the closed list in STANDARD.md,
+// "Refusal reasons". It is the error every stream latches: a stream's Err is a Refusal
+// whenever the library itself refused, so errors.Is(err, serialize.ErrNonFiniteFloat)
+// and a type switch both work, and comparing the sentinels allocates nothing.
+//
+// String returns the reason exactly as STANDARD.md spells it, which is how every
+// implementation in the family names it; Error prefixes the package name.
+//
+// A failed stream reports its FIRST refusal: the refusals of later reads on that stream
+// are echoes of it and keep its reason.
+type Refusal uint8
+
+const (
+	// ErrPastEnd is a read that needs more bits than the stream holds, or a write that
 	// would go past the end of the buffer.
-	ErrOverflow = errors.New("serialize: stream overflow")
+	ErrPastEnd Refusal = iota + 1
 
-	// ErrValueOutOfRange is returned when a value is outside the range it is serialized with.
-	// On read this typically means the packet is corrupt or maliciously crafted.
-	ErrValueOutOfRange = errors.New("serialize: value out of range")
+	// ErrValueOutOfRange is a decoded value outside its declared range or domain: a
+	// ranged offset past its span, a string length past its buffer, a compressed
+	// integer past its maximum, an int_relative outside its domain or not increasing.
+	// On write it is a value outside the range it is serialized with.
+	ErrValueOutOfRange
 
-	// ErrAlign is returned when the zero pad bits read by an align are not zero.
-	// This typically means the read and write serialize functions don't match.
-	ErrAlign = errors.New("serialize: nonzero padding bits in align")
+	// ErrNonzeroPadding is a set bit in an align's padding, or in the unused bits of
+	// the final byte at the end. It typically means the read and write serialize
+	// functions don't match.
+	ErrNonzeroPadding
+
+	// ErrTrailingData is a whole byte or more after the end of the object.
+	ErrTrailingData
+
+	// ErrNonFiniteFloat is a float or double that is NaN or an infinity, or a
+	// compressed float decode that is not finite. The format carries finite values
+	// only, so a write of a non-finite float or double fails with it too.
+	ErrNonFiniteFloat
+
+	// ErrInvalidUTF8 is a string payload that is not well-formed UTF-8.
+	ErrInvalidUTF8
+
+	// ErrEmbeddedNul is a zero byte among a string's transmitted bytes.
+	ErrEmbeddedNul
+
+	// ErrNonCanonical is an encoding a conforming writer never produces for the value
+	// it carries: the int_relative absolute tier carrying a bounded difference.
+	ErrNonCanonical
 )
+
+// refusalNames are the reasons as STANDARD.md spells them, indexed by Refusal.
+var refusalNames = [...]string{
+	ErrPastEnd:         "past_end",
+	ErrValueOutOfRange: "value_out_of_range",
+	ErrNonzeroPadding:  "nonzero_padding",
+	ErrTrailingData:    "trailing_data",
+	ErrNonFiniteFloat:  "non_finite_float",
+	ErrInvalidUTF8:     "invalid_utf8",
+	ErrEmbeddedNul:     "embedded_nul",
+	ErrNonCanonical:    "non_canonical",
+}
+
+// String returns the reason exactly as STANDARD.md spells it, for example
+// "non_finite_float". A value outside the closed list returns "".
+func (r Refusal) String() string {
+	if int(r) >= len(refusalNames) {
+		return ""
+	}
+	return refusalNames[r]
+}
+
+// Error implements error: "serialize: " and the reason.
+func (r Refusal) Error() string {
+	return "serialize: " + r.String()
+}
 
 // Panic messages for API misuse. These indicate programmer error, never bad packet data,
 // so they panic like the debug asserts in the C++ library rather than returning an error.
 const (
-	panicBitsRange         = "serialize: bits must be in [1,32]"
-	panicBitsRange64       = "serialize: bits must be in [1,64]"
-	panicMinMax            = "serialize: min must not be greater than max"
-	panicIntRelativeDomain = "serialize: int relative previous must be in [0,2147483647]"
-	panicFixedParams       = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
-	panicFixedBounds       = "serialize: fixed point bounds in whole units do not fit the Q format"
-	panicBufferSize        = "serialize: string buffer size must be in [1,1<<31)"
-	panicFloatParams       = "serialize: compressed float requires min < max and resolution > 0"
-	panicPrecomputedFloat  = "serialize: precomputed compressed float constants must be exactly what CompressedFloatParams derives"
-	panicWriteOverflow     = "serialize: bit writer overflow"
-	panicReadOverflow      = "serialize: bit reader would read past the end of the buffer"
-	panicNotAligned        = "serialize: byte array serialization requires byte alignment"
-	panicBufferBytes       = "serialize: bit writer buffer size must be a multiple of 8 bytes"
+	panicBitsRange             = "serialize: bits must be in [1,32]"
+	panicBitsRange64           = "serialize: bits must be in [1,64]"
+	panicMinMax                = "serialize: min must not be greater than max"
+	panicIntRelativeDomain     = "serialize: int relative previous must be in [0,2147483647]"
+	panicFixedParams           = "serialize: fixed point requires integer bits >= 1, fraction bits >= 0, a Q format that fits the storage width, and min <= max"
+	panicFixedBounds           = "serialize: fixed point bounds in whole units do not fit the Q format"
+	panicBufferSize            = "serialize: string buffer size must be in [1,1<<31)"
+	panicFloatParams           = "serialize: compressed float requires min < max and resolution > 0"
+	panicPrecomputedFloat      = "serialize: precomputed compressed float constants must be exactly what CompressedFloatParams derives"
+	panicCompressedFloatDecode = "serialize: compressed float declaration decodes its top integer to a value that is not finite"
+	panicWriteOverflow         = "serialize: bit writer overflow"
+	panicReadOverflow          = "serialize: bit reader would read past the end of the buffer"
+	panicNotAligned            = "serialize: byte array serialization requires byte alignment"
+	panicBufferBytes           = "serialize: bit writer buffer size must be a multiple of 8 bytes"
 )
 
 // BitsRequired returns the number of bits required to serialize an integer in range [min,max].

@@ -36,7 +36,9 @@
 # in go.mod, which is the one thing that reaches a consumer who already
 # resolved the bad version. This repository has done it twice -- v1.0.0 for the
 # post-release renames, v1.8.0 for the arm64 compressed_float divergence -- and
-# both entries are still in go.mod, which is where to copy the form from.
+# both entries are in the v1 module's go.mod (any v1.x tag), which is where to
+# copy the form from. A v2 retraction goes in this go.mod: retractions belong to
+# the module path, and v2 is github.com/mas-bandwidth/serialize.go/v2.
 name: release check
 
 on:

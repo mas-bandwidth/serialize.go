@@ -103,7 +103,9 @@ jobs:
           	serialize "$module"
           )
 
-          // three fields, one function, read and write from the same source
+          // three fields and the end, one function, read and write from the same
+          // source: the end writes nothing, and on read refuses a byte left over or
+          // a set padding bit
           func message(s serialize.Stream, alive *bool, health *int32, sequence *uint16) error {
           	if err := s.SerializeBool(alive); err != nil {
           		return err
@@ -111,7 +113,10 @@ jobs:
           	if err := s.SerializeInt(health, 0, 1000); err != nil {
           		return err
           	}
-          	return s.SerializeUint16(sequence)
+          	if err := s.SerializeUint16(sequence); err != nil {
+          		return err
+          	}
+          	return s.SerializeEnd()
           }
 
           func main() {

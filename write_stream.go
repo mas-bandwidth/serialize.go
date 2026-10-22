@@ -3,7 +3,6 @@ package serialize
 import (
 	"encoding/binary"
 	"math"
-	"unicode/utf16"
 )
 
 // WriteStream writes bitpacked data to a buffer. It carries the bit writer state in
@@ -131,7 +130,7 @@ func (s *WriteStream) tryWriteBits64(value uint64, bits int) bool {
 // packing fast path and the error latch both fuse into this body.
 func (s *WriteStream) writeBits(value uint32, bits int) error {
 	if !s.tryWriteBits(value, bits) {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	return nil
 }
@@ -160,7 +159,7 @@ func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 		panic(panicBitsRange64)
 	}
 	if !s.tryWriteBits64(*value&(^uint64(0)>>(64-bits)), bits) {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	return nil
 }
@@ -179,7 +178,7 @@ func (s *WriteStream) SerializeInt(value *int32, min, max int32) error {
 	// subtract in the unsigned domain: the range may be wider than 2^31. The offset
 	// is within the range, so it is already masked to bits.
 	if !s.tryWriteBits(uint32(v)-uint32(min), bits) {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	return nil
 }
@@ -198,7 +197,7 @@ func (s *WriteStream) SerializeInt64(value *int64, min, max int64) error {
 	// subtract in the unsigned domain: the range may be wider than 2^63. The offset is
 	// within the range, so it is already masked to bits.
 	if !s.tryWriteBits64(uint64(v)-uint64(min), bits) {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	return nil
 }
@@ -235,7 +234,7 @@ func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
 	}
 	numBits := BitsRequired128(min.Uint128(), max.Uint128())
 	if s.bitsWritten+int64(numBits) > s.numBits {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	s.writeGroups128(v.Uint128().Sub(min.Uint128()), numBits)
 	return nil
@@ -247,7 +246,7 @@ func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
 // order.
 func (s *WriteStream) SerializeUint128(value *Uint128) error {
 	if s.bitsWritten+128 > s.numBits {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	s.tryWriteBits64(value.Lo, 64)
 	s.tryWriteBits64(value.Hi, 64)
@@ -266,7 +265,7 @@ func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits i
 		return s.fail(ErrValueOutOfRange)
 	}
 	if s.bitsWritten+int64(numBits) > s.numBits {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	// the offset is within the raw range, so both dwords are already masked
 	s.tryWriteBits64(offset, numBits)
@@ -288,7 +287,7 @@ func (s *WriteStream) SerializeFixed128(value *Int128, integerBits, fractionBits
 		return s.fail(ErrValueOutOfRange)
 	}
 	if s.bitsWritten+int64(numBits) > s.numBits {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	s.writeGroups128(offset, numBits)
 	return nil
@@ -312,7 +311,7 @@ func (s *WriteStream) SerializeUint32(value *uint32) error {
 // SerializeUint64 writes an unsigned 64 bit integer as the low dword then the high dword.
 func (s *WriteStream) SerializeUint64(value *uint64) error {
 	if !s.tryWriteBits64(*value, 64) {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	return nil
 }
@@ -322,14 +321,25 @@ func (s *WriteStream) SerializeBool(value *bool) error {
 	return s.writeBool(*value)
 }
 
-// SerializeFloat32 writes an uncompressed 32 bit floating point value.
+// SerializeFloat32 writes an uncompressed 32 bit floating point value. The format
+// carries finite values only, as an int carries values inside its range: NaN and the
+// infinities return ErrNonFiniteFloat and write nothing. Negative zero and the
+// subnormals are written bit exact.
 func (s *WriteStream) SerializeFloat32(value *float32) error {
-	return s.writeBits(math.Float32bits(*value), 32)
+	bits := math.Float32bits(*value)
+	if !float32BitsAreFinite(bits) {
+		return s.fail(ErrNonFiniteFloat)
+	}
+	return s.writeBits(bits, 32)
 }
 
-// SerializeFloat64 writes an uncompressed 64 bit floating point value.
+// SerializeFloat64 writes an uncompressed 64 bit floating point value, finite only,
+// exactly as SerializeFloat32.
 func (s *WriteStream) SerializeFloat64(value *float64) error {
 	bits := math.Float64bits(*value)
+	if !float64BitsAreFinite(bits) {
+		return s.fail(ErrNonFiniteFloat)
+	}
 	return s.SerializeUint64(&bits)
 }
 
@@ -367,7 +377,16 @@ func (s *WriteStream) SerializeCompressedFloat32Precomputed(value *float32, maxI
 // after deriving the constants, SerializeCompressedFloat32Precomputed after validating
 // the caller's. The value is clamped into the declared range before quantization; the
 // !>= / !<= clamp form forces NaN into range too.
+//
+// A declaration whose top integer decodes to a value that is not finite — min + delta,
+// rounded once in float32 — is non-conforming as a whole (STANDARD.md, "The decode
+// must be finite"), so the writer panics on it, as on any other misdeclared field,
+// even for a value that would decode finite. Only the writer checks: a reader refuses
+// the non-finite decode itself, whatever the declaration.
 func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
+	if !float32BitsAreFinite(math.Float32bits(min + delta)) {
+		panic(panicCompressedFloatDecode)
+	}
 	normalizedValue := (*value - min) / delta
 	if !(normalizedValue >= 0) {
 		normalizedValue = 0
@@ -436,7 +455,7 @@ func (s *WriteStream) SerializeBytes(data []byte) error {
 		return err
 	}
 	if s.bitsWritten+int64(len(data))*8 > s.numBits {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	writeBytesStream(s, data)
 	return nil
@@ -461,49 +480,9 @@ func (s *WriteStream) SerializeString(value *string, bufferSize int) error {
 		return err
 	}
 	if s.bitsWritten+int64(length)*8 > s.numBits {
-		return s.fail(ErrOverflow)
+		return s.fail(ErrPastEnd)
 	}
 	writeBytesStream(s, *value)
-	return nil
-}
-
-// SerializeWideString writes the length of *value in UTF-16 code units in
-// [0,bufferSize-1], then each code unit as 32 bits. Wire compatible with
-// serialize_wstring in the C++ library: STANDARD.md pins each 32 bit group as one
-// UTF-16 code unit, so astral code points are split into surrogate pairs — two
-// groups — and every platform produces identical bytes. The payload is well formed
-// by construction: ranging over a Go string can only yield valid code points
-// (invalid UTF-8 decodes as U+FFFD, the writer contract surfacing Go's way), never
-// an unpaired surrogate. Returns ErrValueOutOfRange if the string does not fit in
-// bufferSize-1 code units.
-func (s *WriteStream) SerializeWideString(value *string, bufferSize int) error {
-	validateBufferSize(bufferSize)
-	if s.err != nil {
-		return s.err
-	}
-	units := utf16Length(*value)
-	if !wideStringFits(units, bufferSize) {
-		return s.fail(ErrValueOutOfRange)
-	}
-	length := int32(units)
-	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
-		return err
-	}
-	for _, r := range *value {
-		if r >= 0x10000 {
-			hi, lo := utf16.EncodeRune(r)
-			if err := s.writeBits(uint32(hi), 32); err != nil {
-				return err
-			}
-			if err := s.writeBits(uint32(lo), 32); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := s.writeBits(uint32(r), 32); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -521,6 +500,13 @@ func (s *WriteStream) SerializeAlign() error {
 		return s.err
 	}
 	return s.writeBits(0, alignBits)
+}
+
+// SerializeEnd writes the end of the object, which emits nothing: the unused bits of
+// the final byte are already zero, and Flush and Data hand on exactly the bytes the
+// object occupies. It exists so one serialize function reads its end too.
+func (s *WriteStream) SerializeEnd() error {
+	return s.err
 }
 
 // SerializeObject writes an object that implements Serializer.
