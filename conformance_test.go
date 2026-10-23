@@ -27,6 +27,21 @@ import (
 // The corpus is vendored the way STANDARD.md is, and the corpus-sync CI job fails when the
 // two copies diverge.
 
+// conformanceRoot is the directory holding conformance/ and conformance-controls/. Empty is
+// the vendored copy beside this file. The nightly conformance workflow sets
+// SERIALIZE_CONFORMANCE_ROOT to a checkout of mas-bandwidth/serialize at main, so the same
+// runner checks this port against the CURRENT upstream corpus and controls, not only the
+// copy vendored here. It must be an absolute path: the sabotage controls run the corpus
+// again from a scratch directory.
+func conformanceRoot(root string) string {
+	if root == "" {
+		return "."
+	}
+	return root
+}
+
+var corpusRoot = conformanceRoot(os.Getenv("SERIALIZE_CONFORMANCE_ROOT"))
+
 type expectKind int
 
 const (
@@ -1030,12 +1045,12 @@ func runMeasure(t *testing.T, vector conformanceVector, steps []step) {
 // zero padded tail window, and once with backing slack, which drives the branchless window
 // loads. The two paths are separate code in bitpacker.go and must agree on every vector.
 func TestConformanceCorpus(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("conformance", "*.txt"))
+	files, err := filepath.Glob(filepath.Join(corpusRoot, "conformance", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(files) == 0 {
-		t.Fatal("no conformance vectors found: the vendored conformance/ directory is missing")
+		t.Fatalf("no conformance vectors found: %s is missing", filepath.Join(corpusRoot, "conformance"))
 	}
 
 	total := 0
@@ -1116,4 +1131,23 @@ func vectorSteps(vector conformanceVector) ([]step, error) {
 		}
 	}
 	return buildSteps(vector)
+}
+
+// TestConformanceRoot pins where the runner reads the corpus: the vendored directories
+// when SERIALIZE_CONFORMANCE_ROOT is unset, and the named root's when it is set. The value
+// is passed in, so nothing here touches the process environment or the filesystem.
+func TestConformanceRoot(t *testing.T) {
+	if got := filepath.Join(conformanceRoot(""), "conformance"); got != "conformance" {
+		t.Fatalf("unset root reads %q, want the vendored conformance", got)
+	}
+	if got := filepath.Join(conformanceRoot(""), "conformance-controls"); got != "conformance-controls" {
+		t.Fatalf("unset root reads %q, want the vendored conformance-controls", got)
+	}
+	root := filepath.Join(string(filepath.Separator)+"work", "upstream")
+	if got := filepath.Join(conformanceRoot(root), "conformance"); got != filepath.Join(root, "conformance") {
+		t.Fatalf("root %q reads %q, want its conformance", root, got)
+	}
+	if got := filepath.Join(conformanceRoot(root), "conformance-controls"); got != filepath.Join(root, "conformance-controls") {
+		t.Fatalf("root %q reads %q, want its conformance-controls", root, got)
+	}
 }

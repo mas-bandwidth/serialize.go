@@ -178,19 +178,26 @@ func copyPackageForControl(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vectors, err := filepath.Glob(filepath.Join("conformance", "*.txt"))
+	vectors, err := filepath.Glob(filepath.Join(corpusRoot, "conformance", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(dir, "conformance"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range append(append(sources, "go.mod"), vectors...) {
-		content, err := os.ReadFile(path)
+	copies := map[string]string{"go.mod": "go.mod"}
+	for _, path := range sources {
+		copies[path] = path
+	}
+	for _, path := range vectors {
+		copies[path] = filepath.Join("conformance", filepath.Base(path))
+	}
+	for from, to := range copies {
+		content, err := os.ReadFile(from)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, path), content, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, to), content, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -205,7 +212,8 @@ func failingVectors(t *testing.T, goTool, dir string) []string {
 	command.Dir = dir
 	// the scratch module has no dependencies and must never look for any: no proxy, no
 	// toolchain download, no workspace from above the scratch directory
-	command.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=")
+	// and it reads the corpus copied into it, whatever root the outer run was pointed at
+	command.Env = append(os.Environ(), "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=", "SERIALIZE_CONFORMANCE_ROOT=")
 	output, _ := command.CombinedOutput() // a sabotaged corpus run exits non-zero by design
 
 	type event struct {
@@ -262,12 +270,12 @@ func TestConformanceControls(t *testing.T) {
 	}
 
 	// every vendored list is controlled here or named as not applicable, with a reason
-	lists, err := filepath.Glob(filepath.Join("conformance-controls", "*.expected"))
+	lists, err := filepath.Glob(filepath.Join(corpusRoot, "conformance-controls", "*.expected"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(lists) == 0 {
-		t.Fatal("no conformance-controls/*.expected lists found: the vendored directory is missing")
+		t.Fatalf("no *.expected lists found: %s is missing", filepath.Join(corpusRoot, "conformance-controls"))
 	}
 	controlled := map[string]bool{}
 	for _, control := range conformanceControls {
@@ -283,7 +291,7 @@ func TestConformanceControls(t *testing.T) {
 	for _, control := range conformanceControls {
 		t.Run(control.name, func(t *testing.T) {
 			t.Parallel()
-			expected := readExpectedList(t, filepath.Join("conformance-controls", control.name+".expected"))
+			expected := readExpectedList(t, filepath.Join(corpusRoot, "conformance-controls", control.name+".expected"))
 
 			dir := t.TempDir()
 			copyPackageForControl(t, dir)
@@ -327,7 +335,7 @@ func TestConformanceControls(t *testing.T) {
 // operation this runner has no code for. STANDARD.md requires such a vector to be red
 // rather than skipped, so the runner must refuse to build it.
 func TestConformanceControlUnknownOperation(t *testing.T) {
-	vectors := parseConformanceFile(t, filepath.Join("conformance-controls", "unknown-operation.txt"))
+	vectors := parseConformanceFile(t, filepath.Join(corpusRoot, "conformance-controls", "unknown-operation.txt"))
 	if len(vectors) == 0 {
 		t.Fatal("conformance-controls/unknown-operation.txt holds no vector")
 	}

@@ -186,6 +186,13 @@ Nightly (`23 6 * * *`, and `workflow_dispatch`): every per-commit job except
 `fuzz`, 10m per target against a corpus that persists across runs via
 actions/cache. Dependabot bumps action versions weekly.
 
+Nightly conformance (`.github/workflows/nightly-conformance.yml`, `47 5 * * *`, and
+`workflow_dispatch`): a functional test on our fleet runners. It builds the C/C++
+reference at mas-bandwidth/serialize main, certifies its corpus with the reference's own
+ctest, then runs `^TestConformance` with `SERIALIZE_CONFORMANCE_ROOT` pointed at that
+checkout instead of the vendored copy, and fails on any drift. Dispatch with
+`negative_control=true` to see it go red on one flipped upstream byte.
+
 ## Conventions
 
 - Method names mirror the C++ API (SerializeBits, SerializeInt, SerializeAlign...);
