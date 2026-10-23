@@ -1,0 +1,137 @@
+name: nightly conformance
+
+# THIS PORT AGAINST THE CURRENT C/C++ DATA, EVERY NIGHT, ON OUR OWN MACHINES.
+#
+# The per-commit tier checks the vendored corpus, and corpus-sync diffs that copy
+# against upstream. Neither proves the port still agrees with what the C/C++
+# reference accepts and refuses TODAY: corpus-sync only runs when something is
+# pushed here, and a quiet port can sit behind the standard for weeks with every
+# check green. This job closes that gap. It builds mas-bandwidth/serialize at
+# main HEAD, certifies its corpus and controls with the reference's own ctest,
+# then runs THIS port's conformance runner against that upstream corpus -- not
+# the vendored copy -- through SERIALIZE_CONFORMANCE_ROOT.
+#
+# THE CORPUS IS NOT REGENERATED. serialize has no corpus generator, by design:
+# STANDARD.md says the corpus "is never generated from an implementation", because
+# a suite that regenerates its own expectations proves only that a port agrees
+# with itself. So the job uses upstream's committed corpus, and the reference
+# build certifies that the C/C++ implementation agrees with it before the port is
+# held to it.
+#
+# This is a functional test (real toolchains, a real clone of another repo), so it
+# runs nightly and on dispatch only, never on push or pull_request: the one-minute
+# rule for per-commit CI is untouched, and nightlies are exempt from the two-minute
+# rule, so it gets a real timeout.
+#
+# NEGATIVE CONTROL: dispatch with negative_control=true and the job flips one bit
+# in a copy of the first accepted vector of conformance/int.txt and points the
+# port at the copy. That run MUST go red, in the port's runner step. An
+# instrument nobody has seen go red is a claim rather than a measurement. No
+# broken vector is ever committed.
+
+on:
+  schedule:
+    - cron: "47 5 * * *"
+  workflow_dispatch:
+    inputs:
+      negative_control:
+        description: "flip one byte in a copy of an upstream vector; the job must go red"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: port against upstream C/C++ conformance data
+    # OUR FLEET, never GitHub's machines. Never the `space` label: that is the
+    # XDP machine. Toolchains are installed inside the job by pinned setup
+    # actions, so no machine's global state changes.
+    runs-on: [self-hosted, Linux, X64, fleet]
+    timeout-minutes: 60
+    env:
+      NEGATIVE_CONTROL: ${{ inputs.negative_control && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+
+      - name: Check out mas-bandwidth/serialize at main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          repository: mas-bandwidth/serialize
+          ref: main
+          path: upstream
+
+      - name: Name the runner and the upstream commit
+        run: |
+          echo "runner: $RUNNER_NAME"
+          echo "upstream: mas-bandwidth/serialize@$(git -C upstream rev-parse HEAD)"
+          echo "negative control: $NEGATIVE_CONTROL"
+
+      - uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3   # v2.2.0
+
+      # the reference's own recipe (BUILDING.md), and its own ctest: the conformance
+      # target runs the corpus and every conformance-control-* proves the corpus
+      # still catches a reader with one rule deleted
+      - name: Build the C/C++ reference and certify the upstream corpus
+        run: |
+          if ! command -v c++ >/dev/null; then
+            echo "::error::no C++ compiler (c++) on runner $RUNNER_NAME: the C/C++ reference cannot be built"
+            exit 1
+          fi
+          cmake -B upstream/build -S upstream -DCMAKE_BUILD_TYPE=Release
+          cmake --build upstream/build --parallel
+          ctest --test-dir upstream/build -R conformance --output-on-failure
+
+      - name: Choose the corpus root
+        run: |
+          root="$GITHUB_WORKSPACE/upstream"
+          if [ "$NEGATIVE_CONTROL" = "true" ]; then
+            root="$RUNNER_TEMP/negative-control"
+            rm -rf "$root"
+            mkdir -p "$root"
+            cp -R upstream/conformance upstream/conformance-controls "$root/"
+            # flip the low bit of the first byte of the first vector carrying bytes
+            awk 'done == 0 && /^bytes [0-9a-fA-F]/ {
+                   c = tolower(substr($2, 2, 1))
+                   $2 = substr($2, 1, 1) substr("1032547698badcfe", index("0123456789abcdef", c), 1) substr($2, 3)
+                   done = 1
+                 }
+                 { print }' upstream/conformance/int.txt > "$root/conformance/int.txt"
+            if cmp -s upstream/conformance/int.txt "$root/conformance/int.txt"; then
+              echo "::error::the negative control flipped nothing: it would prove nothing"
+              exit 1
+            fi
+            diff upstream/conformance/int.txt "$root/conformance/int.txt" || true
+          fi
+          echo "SERIALIZE_CONFORMANCE_ROOT=$root" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e   # v7
+        with:
+          go-version: stable
+          cache: true
+          cache-dependency-path: go.mod
+
+      # TestConformanceCorpus: every encode byte for byte, every decode of the C/C++
+      # bytes to its values, every refusal with its reason. TestConformanceControls
+      # and TestConformanceControlUnknownOperation: every upstream control still
+      # refuses. Not -short, so the sabotage controls run.
+      - name: Run this port's conformance runner against the upstream corpus
+        run: |
+          echo "corpus root: $SERIALIZE_CONFORMANCE_ROOT"
+          go test -count=1 -run '^TestConformance' .
+
+      # a port behind the standard is exactly what this job exists to catch, so
+      # drift fails it, and it is reported even when the runner step went red
+      - name: Diff the vendored copies against upstream
+        if: always()
+        run: |
+          status=0
+          for path in conformance conformance-controls STANDARD.md; do
+            if ! diff -ru "upstream/$path" "$path"; then
+              echo "::error::$path has drifted from mas-bandwidth/serialize@$(git -C upstream rev-parse HEAD)"
+              status=1
+            fi
+          done
+          [ "$status" -eq 0 ] && echo "vendored conformance/, conformance-controls/ and STANDARD.md match upstream"
+          exit "$status"
