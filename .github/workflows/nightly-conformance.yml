@@ -48,7 +48,7 @@ jobs:
     # OUR FLEET, never GitHub's machines. Never the `space` label: that is the
     # XDP machine. Toolchains are installed inside the job by pinned setup
     # actions, so no machine's global state changes.
-    runs-on: [self-hosted, Linux, X64, fleet]
+    runs-on: [self-hosted, Linux, X64, nightly]
     timeout-minutes: 60
     env:
       NEGATIVE_CONTROL: ${{ inputs.negative_control && 'true' || 'false' }}
