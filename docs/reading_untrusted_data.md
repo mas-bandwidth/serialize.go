@@ -52,7 +52,7 @@ for !done && stream.Err() == nil {
 }
 ```
 
-For count-driven loops, check the error on the count before looping. On success the count is guaranteed to be in range; on failure it holds whatever value it had before, which matters if you reuse packet objects:
+For count-driven loops, bound the count with an application-appropriate `MaxItems`, check the error on the count before looping, and check `stream.Err()` inside the loop body if an iteration can consume zero bits or do substantial work before returning. On success the count is guaranteed to be in `[0, MaxItems]`; on failure it holds whatever value it had before, which matters if you reuse packet objects:
 
 ```go
 if err := stream.SerializeInt(&numItems, 0, MaxItems); err != nil {
@@ -60,10 +60,15 @@ if err := stream.SerializeInt(&numItems, 0, MaxItems); err != nil {
 }
 for i := int32(0); i < numItems; i++ {
     // ... serialize element i ...
+    if err := stream.Err(); err != nil {
+        return err
+    }
 }
 ```
 
-Every successful serialize call consumes at least one bit, so any loop that follows these rules is bounded by the size of the packet. Nested objects are already safe: `SerializeObject` refuses to descend into an object once the stream has an error.
+A `serialize.Continue` or `serialize.Until` loop is bounded by the bit length of the packet because each successful sentinel read (`SerializeBool`) consumes one bit and stops as soon as the stream latches an error. Do not assume that every other successful serialize call consumes at least one bit: the wire format includes legal zero-bit operations — degenerate ranges where `min == max` (`SerializeInt`, `SerializeInt64`, `SerializeInt128`, `SerializeFixed64`, `SerializeFixed128`), `SerializeString(&s, 1)` (whose length range is `[0, 0]`) or an empty string when already byte-aligned, `SerializeBytes(nil)` or `SerializeBytes(buf[:0])` when already byte-aligned, `SerializeAlign()` when already at a byte boundary (`AlignBits() == 0`), and `SerializeObject` on an object whose `Serialize` method performs only zero-bit operations. Consequently, a count-driven loop whose body can execute only zero-bit operations (or remain running after a latched error without checking `stream.Err()`) is bounded by `MaxItems`, not by packet size.
+
+Likewise, `SerializeObject` skips calling `object.Serialize(stream)` once an error is already latched on the stream and latches any error that `object.Serialize` returns, but refusal propagation is not a recursion or depth bound: recursive or self-referential object graphs must still bound their own nesting depth (and consume at least one bit or check a caller depth counter before recursing), because `SerializeObject` itself does not track call depth or guarantee bit consumption.
 
 ## The end of the packet
 
