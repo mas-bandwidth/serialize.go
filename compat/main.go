@@ -52,30 +52,30 @@ import (
 )
 
 type compatData struct {
-	bits4                uint32
-	bits11               uint32
-	bits24               uint32
-	bits32               uint32
-	intSmall             int32
-	intFull              int32
-	degenerate           int32
-	flag                 bool
-	floatValue           float32
-	compressedFloatValue float32
-	compressedFloatHalf  float32
-	compressedFloatShift float32
-	clampRejectWitness   float32
-	clampWideWitness     float32
-	doubleValue          float64
-	uint8Value           uint8
-	uint16Value          uint16
-	uint32Value          uint32
-	uint64Value          uint64
-	relativeNear         int32
-	relativeFar          int32
-	bytes                [7]byte
-	str                  string
-	text                 string
+	bits4                  uint32
+	bits11                 uint32
+	bits24                 uint32
+	bits32                 uint32
+	intSmall               int32
+	intFull                int32
+	degenerate             int32
+	flag                   bool
+	floatValue             float32
+	compressedFloatValue   float32
+	compressedFloatHalf    float32
+	compressedFloatShift   float32
+	clampRejectWitness     float32
+	clampWideWitness       float32
+	doubleValue            float64
+	uint8Value             uint8
+	uint16Value            uint16
+	uint32Value            uint32
+	uint64Value            uint64
+	relativeNear           int32
+	relativeFar            int32
+	bytes                  [7]byte
+	str                    string
+	text                   string
 	bits33                 uint64
 	int64Full              int64
 	int64Range             int64
@@ -144,14 +144,14 @@ func initCompatData() compatData {
 			Add(serialize.Int128From64(0x0FEDCBA987654321)).Neg(),
 		int128Full: serialize.Int128From64(0x0123456789ABCDEF).Lsh(64).
 			Add(serialize.Int128From64(0x0FEDCBA987654321)),
-		fixedQ8_8:              -(3*256 + 64),             // -3.25 in Q8.8: 16 bits, one group
-		fixedQ16_16:            1234*65536 + 32768,        // 1234.5 in Q16.16: 28 bits, one group
-		fixedQ48_16:            -(54321*65536 + 12345),    // -54321.1883697509765625 in Q48.16: 34 bits, two groups
-		fixedQ16_16Unsigned:    29999*65536 + 65535,       // near top of [0, 30000] in unsigned Q16.16: 31 bits, one group
-		fixedQ48_16Degenerate:  -(int64(7) << 16),         // -7.0 in Q48.16 with min == max: zero bits on the wire
-		fixedQ112_16Small:      serialize.Int128From64(-(1*65536 + 16384)),            // -1.25 in Q112.16: 19 bits, one group on 128-bit storage
-		fixedQ112_16Mid:        serialize.Int128From64(12345678901*65536 + 32768),     // 12345678901.5 in Q112.16: 54 bits, two groups on 128-bit storage
-		fixedQ112_16Degenerate: serialize.Int128From64(int64(9) << 16),                // 9.0 in Q112.16 with min == max: zero bits on 128-bit storage
+		fixedQ8_8:              -(3*256 + 64),                                     // -3.25 in Q8.8: 16 bits, one group
+		fixedQ16_16:            1234*65536 + 32768,                                // 1234.5 in Q16.16: 28 bits, one group
+		fixedQ48_16:            -(54321*65536 + 12345),                            // -54321.1883697509765625 in Q48.16: 34 bits, two groups
+		fixedQ16_16Unsigned:    29999*65536 + 65535,                               // near top of [0, 30000] in unsigned Q16.16: 31 bits, one group
+		fixedQ48_16Degenerate:  -(int64(7) << 16),                                 // -7.0 in Q48.16 with min == max: zero bits on the wire
+		fixedQ112_16Small:      serialize.Int128From64(-(1*65536 + 16384)),        // -1.25 in Q112.16: 19 bits, one group on 128-bit storage
+		fixedQ112_16Mid:        serialize.Int128From64(12345678901*65536 + 32768), // 12345678901.5 in Q112.16: 54 bits, two groups on 128-bit storage
+		fixedQ112_16Degenerate: serialize.Int128From64(int64(9) << 16),            // 9.0 in Q112.16 with min == max: zero bits on 128-bit storage
 		// the golden wire wide fixed values (serialize_test.go): negative with a
 		// non-zero fraction over a negative raw minimum, and a 128 bit raw value
 		// whose four 32-bit groups are all distinct
