@@ -19,14 +19,15 @@
 // so the clamp is proven ACROSS the language boundary and not only inside each
 // implementation (serialize#94).
 //
-// The last two fields are the wide fixed point pair, mirrored from the golden wire
-// values in serialize_test.go: a Q112.16 value at 75 bits (three 32-bit groups) and
-// a Q64.64 value over the full unit range at 128 bits (four groups, every group
-// distinct). Until they existed the wide fixed codec was proven inside each
-// language and against the vendored corpus, but nowhere across the Go/C++ boundary:
-// a group-order or remainder-placement divergence in SerializeFixed128 would have
-// passed every gate. Fixed point is exact, so unlike the compressed floats the
-// reader recovers the written values bit for bit.
+// The fixed-point and 128-bit integer tail exercises every wide and fixed-point
+// entry point across the Go/C++ boundary: SerializeUint128 (four distinct 32-bit
+// wire groups), SerializeInt128 across all five branches (degenerate min == max,
+// 1-group <=32 bits, 2-group 33..64 bits, 3-group 65..96 bits, and 4-group 97..128
+// bits both bounded and full-range), SerializeFixed64 across signed/unsigned 1-group,
+// 2-group, and degenerate ranges, and SerializeFixed128 across 1-group, 2-group,
+// 3-group, 4-group, and degenerate ranges. Fixed point and 128-bit integers are
+// exact, so unlike the compressed floats the reader recovers the written values
+// bit for bit.
 //
 // The first three compressed floats are chosen deliberately. 5.0 lands exactly on a
 // quantum and agrees under float32, double and FMA alike -- for years it was the
@@ -41,6 +42,8 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -73,11 +76,26 @@ type compatData struct {
 	bytes                [7]byte
 	str                  string
 	text                 string
-	bits33               uint64
-	int64Full            int64
-	int64Range           int64
-	fixedQ112_16Wide     serialize.Int128
-	fixedQ64_64Wide      serialize.Int128
+	bits33                 uint64
+	int64Full              int64
+	int64Range             int64
+	uint128Value           serialize.Uint128
+	int128Degenerate       serialize.Int128
+	int128OneGroup         serialize.Int128
+	int128TwoGroup         serialize.Int128
+	int128ThreeGroup       serialize.Int128
+	int128FourGroup        serialize.Int128
+	int128Full             serialize.Int128
+	fixedQ8_8              int64
+	fixedQ16_16            int64
+	fixedQ48_16            int64
+	fixedQ16_16Unsigned    int64
+	fixedQ48_16Degenerate  int64
+	fixedQ112_16Small      serialize.Int128
+	fixedQ112_16Mid        serialize.Int128
+	fixedQ112_16Degenerate serialize.Int128
+	fixedQ112_16Wide       serialize.Int128
+	fixedQ64_64Wide        serialize.Int128
 }
 
 func initCompatData() compatData {
@@ -117,12 +135,79 @@ func initCompatData() compatData {
 		bits33:             0x1DEADBEEF,
 		int64Full:          -123456789012345,
 		int64Range:         4123456789,
+		uint128Value:       serialize.Uint128{Lo: 0xFEDCBA9876543210, Hi: 0x0123456789ABCDEF},
+		int128Degenerate:   serialize.Int128{Lo: 7, Hi: 1 << 36}, // 2^100 + 7: degenerate min == max above 64 bits, zero bits on the wire
+		int128OneGroup:     serialize.Int128From64(-37),
+		int128TwoGroup:     serialize.Int128From64(4123456789),
+		int128ThreeGroup:   serialize.Int128From64(-0x0123456789ABCDEF),
+		int128FourGroup: serialize.Int128From64(0x123456789).Lsh(64).
+			Add(serialize.Int128From64(0x0FEDCBA987654321)).Neg(),
+		int128Full: serialize.Int128From64(0x0123456789ABCDEF).Lsh(64).
+			Add(serialize.Int128From64(0x0FEDCBA987654321)),
+		fixedQ8_8:              -(3*256 + 64),             // -3.25 in Q8.8: 16 bits, one group
+		fixedQ16_16:            1234*65536 + 32768,        // 1234.5 in Q16.16: 29 bits, one group
+		fixedQ48_16:            -(54321*65536 + 12345),    // -54321.1883697509765625 in Q48.16: 34 bits, two groups
+		fixedQ16_16Unsigned:    29999*65536 + 65535,       // near top of [0, 30000] in unsigned Q16.16: 31 bits, one group
+		fixedQ48_16Degenerate:  -(int64(7) << 16),         // -7.0 in Q48.16 with min == max: zero bits on the wire
+		fixedQ112_16Small:      serialize.Int128From64(-(1*65536 + 16384)),            // -1.25 in Q112.16: 19 bits, one group on 128-bit storage
+		fixedQ112_16Mid:        serialize.Int128From64(12345678901*65536 + 32768),     // 12345678901.5 in Q112.16: 54 bits, two groups on 128-bit storage
+		fixedQ112_16Degenerate: serialize.Int128From64(int64(9) << 16),                // 9.0 in Q112.16 with min == max: zero bits on 128-bit storage
 		// the golden wire wide fixed values (serialize_test.go): negative with a
 		// non-zero fraction over a negative raw minimum, and a 128 bit raw value
 		// whose four 32-bit groups are all distinct
 		fixedQ112_16Wide: serialize.Int128From64(-(98765432109*65536 + 4321)), // -98765432109.066 in Q112.16: 75 bits, three groups
 		fixedQ64_64Wide: serialize.Int128From64(0x0123456789ABCDEF).Lsh(64).
 			Add(serialize.Int128From64(0x0FEDCBA987654321)), // Q64.64 over the full unit range: 128 bits, four groups
+	}
+}
+
+func initSentinelCompatData() compatData {
+	sentinel128 := serialize.Int128{Lo: 0xDEADDEADDEADDEAD, Hi: 0x5A5A5A5A5A5A5A5A}
+	return compatData{
+		bits4:                  0xA5A5A5A5,
+		bits11:                 0xA5A5A5A5,
+		bits24:                 0xA5A5A5A5,
+		bits32:                 0xA5A5A5A5,
+		intSmall:               -777777,
+		intFull:                -777777,
+		degenerate:             -777777,
+		flag:                   false,
+		floatValue:             -99999.5,
+		compressedFloatValue:   -99999.5,
+		compressedFloatHalf:    -99999.5,
+		compressedFloatShift:   -99999.5,
+		clampRejectWitness:     -99999.5,
+		clampWideWitness:       -99999.5,
+		doubleValue:            -99999.5,
+		uint8Value:             0x5A,
+		uint16Value:            0x5A5A,
+		uint32Value:            0x5A5A5A5A,
+		uint64Value:            0x5A5A5A5A5A5A5A5A,
+		relativeNear:           -777777,
+		relativeFar:            -777777,
+		bytes:                  [7]byte{0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A, 0x5A},
+		str:                    "sentinel",
+		text:                   "sent",
+		bits33:                 0x5A5A5A5A5A5A5A5A,
+		int64Full:              -777777777777,
+		int64Range:             -777777777777,
+		uint128Value:           serialize.Uint128{Lo: 0xDEADDEADDEADDEAD, Hi: 0x5A5A5A5A5A5A5A5A},
+		int128Degenerate:       sentinel128,
+		int128OneGroup:         sentinel128,
+		int128TwoGroup:         sentinel128,
+		int128ThreeGroup:       sentinel128,
+		int128FourGroup:        sentinel128,
+		int128Full:             sentinel128,
+		fixedQ8_8:              -777777777777,
+		fixedQ16_16:            -777777777777,
+		fixedQ48_16:            -777777777777,
+		fixedQ16_16Unsigned:    -777777777777,
+		fixedQ48_16Degenerate:  -777777777777,
+		fixedQ112_16Small:      sentinel128,
+		fixedQ112_16Mid:        sentinel128,
+		fixedQ112_16Degenerate: sentinel128,
+		fixedQ112_16Wide:       sentinel128,
+		fixedQ64_64Wide:        sentinel128,
 	}
 }
 
@@ -185,8 +270,33 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 	stream.SerializeBits64(&data.bits33, 33)
 	stream.SerializeInt64(&data.int64Full, math.MinInt64, math.MaxInt64)
 	stream.SerializeInt64(&data.int64Range, -5000000000, +5000000000)
-	// the wide fixed pair: bounds and values mirrored in cpp/compat.cpp, which
-	// drives serialize_fixed over serialize::int128_t storage
+	// 128-bit unsigned and signed integers across all five group-count branches
+	// (0-bit degenerate, 1-group <=32 bits, 2-group 33..64 bits, 3-group 65..96 bits,
+	// and 4-group 97..128 bits both bounded and full-range)
+	stream.SerializeUint128(&data.uint128Value)
+	int128DegenUnit := serialize.Int128{Lo: 7, Hi: 1 << 36}
+	stream.SerializeInt128(&data.int128Degenerate, int128DegenUnit, int128DegenUnit)
+	stream.SerializeInt128(&data.int128OneGroup, serialize.Int128From64(-100), serialize.Int128From64(+100))
+	stream.SerializeInt128(&data.int128TwoGroup, serialize.Int128From64(-5000000000), serialize.Int128From64(+5000000000))
+	int128Bound70 := serialize.Int128From64(1).Lsh(70)
+	stream.SerializeInt128(&data.int128ThreeGroup, int128Bound70.Neg(), int128Bound70)
+	int128Bound100 := serialize.Int128From64(1).Lsh(100)
+	stream.SerializeInt128(&data.int128FourGroup, int128Bound100.Neg(), int128Bound100)
+	int128Min := serialize.Int128{Lo: 0, Hi: 1 << 63}
+	int128Max := serialize.Int128{Lo: ^uint64(0), Hi: ^uint64(0) >> 1}
+	stream.SerializeInt128(&data.int128Full, int128Min, int128Max)
+	// 64-bit fixed-point across signed/unsigned 1-group, 2-group, and degenerate ranges
+	// (paired in cpp/compat.cpp with int16_t, int32_t, int64_t, and uint32_t storage)
+	stream.SerializeFixed64(&data.fixedQ8_8, 8, 8, -100, +100)
+	stream.SerializeFixed64(&data.fixedQ16_16, 16, 16, -2000, +2000)
+	stream.SerializeFixed64(&data.fixedQ48_16, 48, 16, -100000, +100000)
+	stream.SerializeFixed64(&data.fixedQ16_16Unsigned, 16, 16, 0, 30000)
+	stream.SerializeFixed64(&data.fixedQ48_16Degenerate, 48, 16, -7, -7)
+	// 128-bit fixed-point across 1-group, 2-group, degenerate, 3-group, and 4-group ranges
+	// (paired in cpp/compat.cpp with serialize_fixed over serialize::int128_t storage)
+	stream.SerializeFixed128(&data.fixedQ112_16Small, 112, 16, -2, +2)
+	stream.SerializeFixed128(&data.fixedQ112_16Mid, 112, 16, -100000000000, +100000000000)
+	stream.SerializeFixed128(&data.fixedQ112_16Degenerate, 112, 16, 9, 9)
 	stream.SerializeFixed128(&data.fixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872) // ±2^57 units: 75 bits, three groups
 	stream.SerializeFixed128(&data.fixedQ64_64Wide, 64, 64, math.MinInt64, math.MaxInt64)               // full unit range: 128 bits, four groups
 	// the end of the object: nothing on write, and on read the stream must hold exactly
@@ -196,7 +306,7 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 }
 
 func write(path string) error {
-	buffer := make([]byte, 256)
+	buffer := make([]byte, 512)
 	stream := serialize.NewWriteStream(buffer)
 	data := initCompatData()
 	if err := serializeCompat(stream, &data); err != nil {
@@ -212,12 +322,104 @@ func read(path string) error {
 		return err
 	}
 	stream := serialize.NewReadStream(packet)
-	var data compatData
+	data := initSentinelCompatData()
 	if err := serializeCompat(stream, &data); err != nil {
 		return fmt.Errorf("read stream failed: %w", err)
 	}
 	if expected := expectedCompatData(); data != expected {
 		return fmt.Errorf("decoded values do not match:\nexpected %+v\ngot      %+v", expected, data)
+	}
+	if gotBits, wantBits := stream.BitsProcessed(), int64(len(packet))*8; gotBits != wantBits {
+		return fmt.Errorf("bits processed = %d, want %d", gotBits, wantBits)
+	}
+	if gotBytes, wantBytes := stream.BytesProcessed(), int64(len(packet)); gotBytes != wantBytes {
+		return fmt.Errorf("bytes processed = %d, want %d", gotBytes, wantBytes)
+	}
+
+	// Re-encode the decoded struct and verify byte-for-byte identity with the input packet.
+	reencodeBuf := make([]byte, 512)
+	reencodeStream := serialize.NewWriteStream(reencodeBuf)
+	reencodeData := data
+	if err := serializeCompat(reencodeStream, &reencodeData); err != nil {
+		return fmt.Errorf("re-encode write stream failed: %w", err)
+	}
+	reencodeStream.Flush()
+	if !bytes.Equal(reencodeStream.Data(), packet) {
+		return fmt.Errorf("re-encoded packet bytes do not match input packet (%d vs %d bytes)", len(reencodeStream.Data()), len(packet))
+	}
+
+	// Truncation sweep: every prefix 0..len(packet)-1 must fail cleanly without mutating
+	// trailing destination fields or advancing on subsequent reads after sticky error.
+	sentinel := initSentinelCompatData()
+	for truncLen := range len(packet) {
+		truncSlice := make([]byte, truncLen)
+		copy(truncSlice, packet[:truncLen])
+		truncStream := serialize.NewReadStream(truncSlice)
+		truncData := sentinel
+		if err := serializeCompat(truncStream, &truncData); err == nil {
+			return fmt.Errorf("truncated read at %d/%d bytes unexpectedly succeeded", truncLen, len(packet))
+		}
+		if truncLen <= len(packet)-16 && truncData.fixedQ64_64Wide != sentinel.fixedQ64_64Wide {
+			return fmt.Errorf("truncated read at %d/%d bytes mutated trailing fixedQ64_64Wide", truncLen, len(packet))
+		}
+		bitsBefore := truncStream.BitsProcessed()
+		afterFail := sentinel.fixedQ64_64Wide
+		if err := truncStream.SerializeFixed128(&afterFail, 64, 64, math.MinInt64, math.MaxInt64); err == nil {
+			return fmt.Errorf("subsequent read after failed truncated stream at %d bytes unexpectedly succeeded", truncLen)
+		}
+		if truncStream.BitsProcessed() != bitsBefore {
+			return fmt.Errorf("subsequent read after failed truncated stream at %d bytes advanced BitsProcessed (%d -> %d)", truncLen, bitsBefore, truncStream.BitsProcessed())
+		}
+		if afterFail != sentinel.fixedQ64_64Wide {
+			return fmt.Errorf("subsequent read after failed truncated stream at %d bytes mutated destination", truncLen)
+		}
+	}
+
+	// Negative control 1 (high-group corruption):
+	// (a) Corrupt bits inside the 4th (highest) 32-bit wire group of fixedQ64_64Wide and
+	// verify that decoding succeeds and differs in fixedQ64_64Wide.
+	corruptHigh := make([]byte, len(packet))
+	copy(corruptHigh, packet)
+	corruptHigh[len(corruptHigh)-2] ^= 0xFF
+	corruptHighStream := serialize.NewReadStream(corruptHigh)
+	corruptHighData := sentinel
+	if err := serializeCompat(corruptHighStream, &corruptHighData); err != nil {
+		return fmt.Errorf("negative control (high-group corruption on fixedQ64_64Wide) failed stream decode: %w", err)
+	}
+	if corruptHighData == expectedCompatData() || corruptHighData.fixedQ64_64Wide == expectedCompatData().fixedQ64_64Wide {
+		return fmt.Errorf("negative control (high-group corruption on fixedQ64_64Wide) unexpectedly matched expected data")
+	}
+	// (b) Set all-ones in the high 32-bit group of bounded 3-group fixedQ112_16Wide (11-bit
+	// 3rd group with 21 bits of headroom) and verify ErrValueOutOfRange + untouched trailing field.
+	corruptRange := make([]byte, len(packet))
+	copy(corruptRange, packet)
+	corruptRange[len(corruptRange)-17] = 0xFF
+	corruptRange[len(corruptRange)-18] = 0xFF
+	corruptRangeStream := serialize.NewReadStream(corruptRange)
+	corruptRangeData := sentinel
+	if err := serializeCompat(corruptRangeStream, &corruptRangeData); !errors.Is(err, serialize.ErrValueOutOfRange) {
+		return fmt.Errorf("negative control (out-of-range high group on fixedQ112_16Wide) err = %v, want ErrValueOutOfRange", err)
+	}
+	if corruptRangeData.fixedQ64_64Wide != sentinel.fixedQ64_64Wide {
+		return fmt.Errorf("negative control (out-of-range high group on fixedQ112_16Wide) mutated trailing fixedQ64_64Wide")
+	}
+
+	// Negative control 2 (group-swap on 128-bit field): swap 4 bytes from the low 64-bit half
+	// with 4 bytes from the high 64-bit half of fixedQ64_64Wide and verify mismatch.
+	swapped := make([]byte, len(packet))
+	copy(swapped, packet)
+	for i := range 4 {
+		loIdx := len(swapped) - 14 + i
+		hiIdx := len(swapped) - 6 + i
+		swapped[loIdx], swapped[hiIdx] = swapped[hiIdx], swapped[loIdx]
+	}
+	swappedStream := serialize.NewReadStream(swapped)
+	swappedData := sentinel
+	if err := serializeCompat(swappedStream, &swappedData); err != nil {
+		return fmt.Errorf("negative control (group swap on fixedQ64_64Wide) failed stream decode: %w", err)
+	}
+	if swappedData == expectedCompatData() || swappedData.fixedQ64_64Wide == expectedCompatData().fixedQ64_64Wide {
+		return fmt.Errorf("negative control (group swap on fixedQ64_64Wide) unexpectedly matched expected data")
 	}
 	return nil
 }

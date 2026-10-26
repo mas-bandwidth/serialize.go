@@ -37,14 +37,15 @@
     construction, routing a field through the precomputed one changes no byte of
     this harness's output — that unchanged output is the claim, measured.
 
-    The last two fields are the wide fixed point pair, mirrored from the golden wire
-    values in serialize_test.go: a Q112.16 value at 75 bits (three 32-bit groups) and
-    a Q64.64 value over the full unit range at 128 bits (four groups, every group
-    distinct). Until they existed the wide fixed codec was proven inside each
-    language and against the vendored corpus, but nowhere across the Go/C++ boundary:
-    a group-order or remainder-placement divergence in the 128 bit codec would have
-    passed every gate. Fixed point is exact, so the reader recovers the written
-    values bit for bit.
+    The fixed-point and 128-bit integer tail exercises every wide and fixed-point
+    entry point across the Go/C++ boundary: serialize_uint128 (four distinct 32-bit
+    wire groups), serialize_int128 across all five branches (degenerate min == max,
+    1-group <=32 bits, 2-group 33..64 bits, 3-group 65..96 bits, and 4-group 97..128
+    bits both bounded and full-range), serialize_fixed over 16/32/64-bit signed and
+    unsigned storage across 1-group, 2-group, and degenerate ranges, and
+    serialize_fixed over serialize::int128_t storage across 1-group, 2-group,
+    3-group, 4-group, and degenerate ranges. Fixed point and 128-bit integers are
+    exact, so the reader recovers the written values bit for bit.
 
     Any change to the value sequence must be mirrored in ../main.go, and never changes
     the wire format: see CLAUDE.md invariant 1.
@@ -85,6 +86,21 @@ struct CompatData
     uint64_t bits33;
     int64_t int64Full;
     int64_t int64Range;
+    serialize::uint128_t uint128Value;
+    serialize::int128_t int128Degenerate;
+    serialize::int128_t int128OneGroup;
+    serialize::int128_t int128TwoGroup;
+    serialize::int128_t int128ThreeGroup;
+    serialize::int128_t int128FourGroup;
+    serialize::int128_t int128Full;
+    int16_t fixedQ8_8;
+    int32_t fixedQ16_16;
+    int64_t fixedQ48_16;
+    uint32_t fixedQ16_16Unsigned;
+    int64_t fixedQ48_16Degenerate;
+    serialize::int128_t fixedQ112_16Small;
+    serialize::int128_t fixedQ112_16Mid;
+    serialize::int128_t fixedQ112_16Degenerate;
     serialize::int128_t fixedQ112_16Wide;
     serialize::int128_t fixedQ64_64Wide;
 
@@ -119,11 +135,46 @@ struct CompatData
         bits33 = 0x1DEADBEEFULL;
         int64Full = -123456789012345LL;
         int64Range = 4123456789LL;
+        uint128Value = ( serialize::uint128_t( 0x0123456789ABCDEFULL ) << 64 ) | serialize::uint128_t( 0xFEDCBA9876543210ULL );
+        int128Degenerate = ( serialize::int128_t( 1 ) << 100 ) + 7;
+        int128OneGroup = serialize::int128_t( -37 );
+        int128TwoGroup = serialize::int128_t( 4123456789LL );
+        int128ThreeGroup = serialize::int128_t( -0x0123456789ABCDEFLL );
+        int128FourGroup = -( ( serialize::int128_t( 0x123456789ULL ) << 64 ) + serialize::int128_t( 0x0FEDCBA987654321ULL ) );
+        int128Full = ( serialize::int128_t( 0x0123456789ABCDEFULL ) << 64 ) + serialize::int128_t( 0x0FEDCBA987654321ULL );
+        fixedQ8_8 = -( 3 * 256 + 64 );
+        fixedQ16_16 = 1234 * 65536 + 32768;
+        fixedQ48_16 = -( 54321LL * 65536 + 12345 );
+        fixedQ16_16Unsigned = 29999U * 65536U + 65535U;
+        fixedQ48_16Degenerate = -( 7LL << 16 );
+        fixedQ112_16Small = serialize::int128_t( -( 1LL * 65536 + 16384 ) );
+        fixedQ112_16Mid = serialize::int128_t( 12345678901LL * 65536 + 32768 );
+        fixedQ112_16Degenerate = serialize::int128_t( 9LL << 16 );
         // the golden wire wide fixed values (../main.go): negative with a
         // non-zero fraction over a negative raw minimum, and a 128 bit raw value
         // whose four 32-bit groups are all distinct
         fixedQ112_16Wide = serialize::int128_t( -( 98765432109LL * 65536 + 4321 ) ); // -98765432109.066 in Q112.16: 75 bits, three groups
         fixedQ64_64Wide = ( serialize::int128_t( 0x0123456789ABCDEFULL ) << 64 ) + serialize::int128_t( 0x0FEDCBA987654321ULL ); // Q64.64 over the full unit range: 128 bits, four groups
+    }
+
+    void InitSentinel()
+    {
+        memset( this, 0x5A, sizeof( *this ) );
+        strcpy( str, "sentinel" );
+        strcpy( text, "sent" );
+        const serialize::int128_t sentinel128 = ( serialize::int128_t( 0x5A5A5A5A5A5A5A5AULL ) << 64 ) | serialize::int128_t( 0xDEADDEADDEADDEADULL );
+        uint128Value = ( serialize::uint128_t( 0x5A5A5A5A5A5A5A5AULL ) << 64 ) | serialize::uint128_t( 0xDEADDEADDEADDEADULL );
+        int128Degenerate = sentinel128;
+        int128OneGroup = sentinel128;
+        int128TwoGroup = sentinel128;
+        int128ThreeGroup = sentinel128;
+        int128FourGroup = sentinel128;
+        int128Full = sentinel128;
+        fixedQ112_16Small = sentinel128;
+        fixedQ112_16Mid = sentinel128;
+        fixedQ112_16Degenerate = sentinel128;
+        fixedQ112_16Wide = sentinel128;
+        fixedQ64_64Wide = sentinel128;
     }
 
     // What a conformant reader recovers from the wire. Differs from Init only in
@@ -175,8 +226,29 @@ struct CompatData
         serialize_bits( stream, bits33, 33 );
         serialize_int64( stream, int64Full, INT64_MIN, INT64_MAX );
         serialize_int64( stream, int64Range, -5000000000LL, +5000000000LL );
-        // the wide fixed pair: bounds and values mirrored in ../main.go, which
-        // drives SerializeFixed128 over serialize.Int128 storage
+        // 128-bit unsigned and signed integers across all five group-count branches
+        serialize_uint128( stream, uint128Value );
+        const serialize::int128_t int128DegenUnit = ( serialize::int128_t( 1 ) << 100 ) + 7;
+        serialize_int128( stream, int128Degenerate, int128DegenUnit, int128DegenUnit );
+        serialize_int128( stream, int128OneGroup, serialize::int128_t( -100 ), serialize::int128_t( +100 ) );
+        serialize_int128( stream, int128TwoGroup, serialize::int128_t( -5000000000LL ), serialize::int128_t( +5000000000LL ) );
+        const serialize::int128_t int128Bound70 = serialize::int128_t( 1 ) << 70;
+        serialize_int128( stream, int128ThreeGroup, -int128Bound70, int128Bound70 );
+        const serialize::int128_t int128Bound100 = serialize::int128_t( 1 ) << 100;
+        serialize_int128( stream, int128FourGroup, -int128Bound100, int128Bound100 );
+        const serialize::int128_t int128Min = serialize::int128_t( serialize::uint128_t( 1 ) << 127 );
+        const serialize::int128_t int128Max = ~int128Min;
+        serialize_int128( stream, int128Full, int128Min, int128Max );
+        // 64-bit fixed-point in Go paired with 16/32/64-bit signed and unsigned storage in C++
+        serialize_fixed( stream, fixedQ8_8, 8, 8, -100, +100 );
+        serialize_fixed( stream, fixedQ16_16, 16, 16, -2000, +2000 );
+        serialize_fixed( stream, fixedQ48_16, 48, 16, -100000, +100000 );
+        serialize_fixed( stream, fixedQ16_16Unsigned, 16, 16, 0, 30000 );
+        serialize_fixed( stream, fixedQ48_16Degenerate, 48, 16, -7, -7 );
+        // 128-bit fixed-point across 1-group, 2-group, degenerate, 3-group, and 4-group ranges
+        serialize_fixed( stream, fixedQ112_16Small, 112, 16, -2LL, +2LL );
+        serialize_fixed( stream, fixedQ112_16Mid, 112, 16, -100000000000LL, +100000000000LL );
+        serialize_fixed( stream, fixedQ112_16Degenerate, 112, 16, 9LL, 9LL );
         serialize_fixed( stream, fixedQ112_16Wide, 112, 16, -144115188075855872LL, +144115188075855872LL ); // ±2^57 units: 75 bits, three groups
         serialize_fixed( stream, fixedQ64_64Wide, 64, 64, INT64_MIN, INT64_MAX );               // full unit range: 128 bits, four groups
         // the end of the object: nothing on write, and on read the stream must hold
@@ -214,19 +286,41 @@ struct CompatData
             && bits33 == other.bits33
             && int64Full == other.int64Full
             && int64Range == other.int64Range
+            && uint128Value == other.uint128Value
+            && int128Degenerate == other.int128Degenerate
+            && int128OneGroup == other.int128OneGroup
+            && int128TwoGroup == other.int128TwoGroup
+            && int128ThreeGroup == other.int128ThreeGroup
+            && int128FourGroup == other.int128FourGroup
+            && int128Full == other.int128Full
+            && fixedQ8_8 == other.fixedQ8_8
+            && fixedQ16_16 == other.fixedQ16_16
+            && fixedQ48_16 == other.fixedQ48_16
+            && fixedQ16_16Unsigned == other.fixedQ16_16Unsigned
+            && fixedQ48_16Degenerate == other.fixedQ48_16Degenerate
+            && fixedQ112_16Small == other.fixedQ112_16Small
+            && fixedQ112_16Mid == other.fixedQ112_16Mid
+            && fixedQ112_16Degenerate == other.fixedQ112_16Degenerate
             && fixedQ112_16Wide == other.fixedQ112_16Wide
             && fixedQ64_64Wide == other.fixedQ64_64Wide;
     }
 };
 
-static uint8_t g_buffer[256 + 8];               // + 8: the C++ bit reader window loads may extend past the data
+static uint8_t g_buffer[512 + 8];               // + 8: the C++ bit reader window loads may extend past the data
+
+template <typename Stream> static bool SerializeTrailingFixed( Stream & stream, serialize::int128_t & value )
+{
+    serialize_fixed( stream, value, 64, 64, INT64_MIN, INT64_MAX );
+    return true;
+}
 
 static int Write( const char * path )
 {
     CompatData data;
     data.Init();
 
-    serialize::WriteStream stream( g_buffer, 256 );
+    memset( g_buffer, 0, sizeof( g_buffer ) );
+    serialize::WriteStream stream( g_buffer, 512 );
     if ( !data.Serialize( stream ) )
     {
         fprintf( stderr, "compat cpp write: serialize failed\n" );
@@ -261,9 +355,10 @@ static int Read( const char * path )
         fprintf( stderr, "compat cpp read: could not open %s\n", path );
         return 1;
     }
-    const size_t bytes = fread( g_buffer, 1, 256, file );
+    memset( g_buffer, 0, sizeof( g_buffer ) );
+    const size_t bytes = fread( g_buffer, 1, 512, file );
     fclose( file );
-    if ( bytes == 0 || bytes >= 256 )
+    if ( bytes == 0 || bytes >= 512 )
     {
         fprintf( stderr, "compat cpp read: unexpected packet size %zu\n", bytes );
         return 1;
@@ -271,7 +366,7 @@ static int Read( const char * path )
 
     serialize::ReadStream stream( g_buffer, (int) bytes );
     CompatData data;
-    memset( &data, 0, sizeof( data ) );
+    data.InitSentinel();
     if ( !data.Serialize( stream ) )
     {
         fprintf( stderr, "compat cpp read: serialize failed\n" );
@@ -284,6 +379,148 @@ static int Read( const char * path )
     {
         fprintf( stderr, "compat cpp read: decoded values do not match\n" );
         return 1;
+    }
+    if ( stream.GetBitsProcessed() != (int64_t) bytes * 8 )
+    {
+        fprintf( stderr, "compat cpp read: bits processed = %lld, want %lld\n", (long long) stream.GetBitsProcessed(), (long long) bytes * 8 );
+        return 1;
+    }
+    if ( stream.GetBytesProcessed() != (int64_t) bytes )
+    {
+        fprintf( stderr, "compat cpp read: bytes processed = %lld, want %lld\n", (long long) stream.GetBytesProcessed(), (long long) bytes );
+        return 1;
+    }
+
+    // Re-encode the decoded struct and verify byte-for-byte identity with the input packet.
+    uint8_t reencodeBuf[512 + 8];
+    memset( reencodeBuf, 0, sizeof( reencodeBuf ) );
+    serialize::WriteStream reencodeStream( reencodeBuf, 512 );
+    CompatData reencodeData = data;
+    if ( !reencodeData.Serialize( reencodeStream ) )
+    {
+        fprintf( stderr, "compat cpp read: re-encode serialize failed\n" );
+        return 1;
+    }
+    reencodeStream.Flush();
+    if ( (size_t) reencodeStream.GetBytesProcessed() != bytes || memcmp( reencodeBuf, g_buffer, bytes ) != 0 )
+    {
+        fprintf( stderr, "compat cpp read: re-encoded packet bytes do not match input packet\n" );
+        return 1;
+    }
+
+    // Truncation sweep: every prefix 0..bytes-1 must fail cleanly without mutating
+    // trailing destination fields or advancing on subsequent reads after sticky error.
+    CompatData sentinel;
+    sentinel.InitSentinel();
+    for ( size_t truncLen = 0; truncLen < bytes; ++truncLen )
+    {
+        uint8_t truncBuf[512 + 8];
+        memset( truncBuf, 0, sizeof( truncBuf ) );
+        memcpy( truncBuf, g_buffer, truncLen );
+        serialize::ReadStream truncStream( truncBuf, (int) truncLen );
+        CompatData truncData;
+        truncData.InitSentinel();
+        if ( truncData.Serialize( truncStream ) )
+        {
+            fprintf( stderr, "compat cpp read: truncated read at %zu/%zu bytes unexpectedly succeeded\n", truncLen, bytes );
+            return 1;
+        }
+        if ( truncLen <= bytes - 16 && truncData.fixedQ64_64Wide != sentinel.fixedQ64_64Wide )
+        {
+            fprintf( stderr, "compat cpp read: truncated read at %zu/%zu bytes mutated trailing fixedQ64_64Wide\n", truncLen, bytes );
+            return 1;
+        }
+        const int64_t bitsBefore = truncStream.GetBitsProcessed();
+        serialize::int128_t afterFail = sentinel.fixedQ64_64Wide;
+        if ( SerializeTrailingFixed( truncStream, afterFail ) )
+        {
+            fprintf( stderr, "compat cpp read: subsequent read after failed truncated stream at %zu bytes unexpectedly succeeded\n", truncLen );
+            return 1;
+        }
+        if ( truncStream.GetBitsProcessed() != bitsBefore )
+        {
+            fprintf( stderr, "compat cpp read: subsequent read after failed truncated stream at %zu bytes advanced BitsProcessed (%lld -> %lld)\n", truncLen, (long long) bitsBefore, (long long) truncStream.GetBitsProcessed() );
+            return 1;
+        }
+        if ( afterFail != sentinel.fixedQ64_64Wide )
+        {
+            fprintf( stderr, "compat cpp read: subsequent read after failed truncated stream at %zu bytes mutated destination\n", truncLen );
+            return 1;
+        }
+    }
+
+    // Negative control 1 (high-group corruption):
+    // (a) Corrupt bits inside the 4th (highest) 32-bit wire group of fixedQ64_64Wide and
+    // verify that decoding succeeds and differs in fixedQ64_64Wide.
+    {
+        uint8_t corruptHigh[512 + 8];
+        memset( corruptHigh, 0, sizeof( corruptHigh ) );
+        memcpy( corruptHigh, g_buffer, bytes );
+        corruptHigh[bytes - 2] ^= 0xFF;
+        serialize::ReadStream corruptHighStream( corruptHigh, (int) bytes );
+        CompatData corruptHighData;
+        corruptHighData.InitSentinel();
+        if ( !corruptHighData.Serialize( corruptHighStream ) )
+        {
+            fprintf( stderr, "compat cpp read: negative control (high-group corruption on fixedQ64_64Wide) failed stream decode\n" );
+            return 1;
+        }
+        if ( corruptHighData.Equals( expected ) || corruptHighData.fixedQ64_64Wide == expected.fixedQ64_64Wide )
+        {
+            fprintf( stderr, "compat cpp read: negative control (high-group corruption on fixedQ64_64Wide) unexpectedly matched expected data\n" );
+            return 1;
+        }
+    }
+    // (b) Set all-ones in the high 32-bit group of bounded 3-group fixedQ112_16Wide (11-bit
+    // 3rd group with 21 bits of headroom) and verify range rejection + untouched trailing field.
+    {
+        uint8_t corruptRange[512 + 8];
+        memset( corruptRange, 0, sizeof( corruptRange ) );
+        memcpy( corruptRange, g_buffer, bytes );
+        corruptRange[bytes - 17] = 0xFF;
+        corruptRange[bytes - 18] = 0xFF;
+        serialize::ReadStream corruptRangeStream( corruptRange, (int) bytes );
+        CompatData corruptRangeData;
+        corruptRangeData.InitSentinel();
+        if ( corruptRangeData.Serialize( corruptRangeStream ) )
+        {
+            fprintf( stderr, "compat cpp read: negative control (out-of-range high group on fixedQ112_16Wide) unexpectedly succeeded\n" );
+            return 1;
+        }
+        if ( corruptRangeData.fixedQ64_64Wide != sentinel.fixedQ64_64Wide )
+        {
+            fprintf( stderr, "compat cpp read: negative control (out-of-range high group on fixedQ112_16Wide) mutated trailing fixedQ64_64Wide\n" );
+            return 1;
+        }
+    }
+
+    // Negative control 2 (group-swap on 128-bit field): swap 4 bytes from the low 64-bit half
+    // with 4 bytes from the high 64-bit half of fixedQ64_64Wide and verify mismatch.
+    {
+        uint8_t swapped[512 + 8];
+        memset( swapped, 0, sizeof( swapped ) );
+        memcpy( swapped, g_buffer, bytes );
+        for ( size_t i = 0; i < 4; ++i )
+        {
+            const size_t loIdx = bytes - 14 + i;
+            const size_t hiIdx = bytes - 6 + i;
+            const uint8_t tmp = swapped[loIdx];
+            swapped[loIdx] = swapped[hiIdx];
+            swapped[hiIdx] = tmp;
+        }
+        serialize::ReadStream swappedStream( swapped, (int) bytes );
+        CompatData swappedData;
+        swappedData.InitSentinel();
+        if ( !swappedData.Serialize( swappedStream ) )
+        {
+            fprintf( stderr, "compat cpp read: negative control (group swap on fixedQ64_64Wide) failed stream decode\n" );
+            return 1;
+        }
+        if ( swappedData.Equals( expected ) || swappedData.fixedQ64_64Wide == expected.fixedQ64_64Wide )
+        {
+            fprintf( stderr, "compat cpp read: negative control (group swap on fixedQ64_64Wide) unexpectedly matched expected data\n" );
+            return 1;
+        }
     }
 
     printf( "compat cpp read ok\n" );
