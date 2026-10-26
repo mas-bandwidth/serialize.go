@@ -10,7 +10,7 @@
 //
 // The sequence includes a degenerate range (min == max), which costs zero bits: it
 // must round trip across both languages while leaving every downstream field on
-// exactly the bit it was on before. It sits at serialize call 7 of 29, so 22 calls
+// exactly the bit it was on before. It sits at serialize call 7 of 31, so 24 calls
 // follow it -- the point is not that it is central but that a great many fields come
 // after it, every one of which would shift and fail the round trip if the degenerate
 // range ever started consuming bit space. That is why adding it did not change a
@@ -18,6 +18,15 @@
 // are the normative integer clamp's witnesses (STANDARD.md, schema#109), pinned here
 // so the clamp is proven ACROSS the language boundary and not only inside each
 // implementation (serialize#94).
+//
+// The last two fields are the wide fixed point pair, mirrored from the golden wire
+// values in serialize_test.go: a Q112.16 value at 75 bits (three 32-bit groups) and
+// a Q64.64 value over the full unit range at 128 bits (four groups, every group
+// distinct). Until they existed the wide fixed codec was proven inside each
+// language and against the vendored corpus, but nowhere across the Go/C++ boundary:
+// a group-order or remainder-placement divergence in SerializeFixed128 would have
+// passed every gate. Fixed point is exact, so unlike the compressed floats the
+// reader recovers the written values bit for bit.
 //
 // The first three compressed floats are chosen deliberately. 5.0 lands exactly on a
 // quantum and agrees under float32, double and FMA alike -- for years it was the
@@ -67,6 +76,8 @@ type compatData struct {
 	bits33               uint64
 	int64Full            int64
 	int64Range           int64
+	fixedQ112_16Wide     serialize.Int128
+	fixedQ64_64Wide      serialize.Int128
 }
 
 func initCompatData() compatData {
@@ -106,6 +117,12 @@ func initCompatData() compatData {
 		bits33:             0x1DEADBEEF,
 		int64Full:          -123456789012345,
 		int64Range:         4123456789,
+		// the golden wire wide fixed values (serialize_test.go): negative with a
+		// non-zero fraction over a negative raw minimum, and a 128 bit raw value
+		// whose four 32-bit groups are all distinct
+		fixedQ112_16Wide: serialize.Int128From64(-(98765432109*65536 + 4321)), // -98765432109.066 in Q112.16: 75 bits, three groups
+		fixedQ64_64Wide: serialize.Int128From64(0x0123456789ABCDEF).Lsh(64).
+			Add(serialize.Int128From64(0x0FEDCBA987654321)), // Q64.64 over the full unit range: 128 bits, four groups
 	}
 }
 
@@ -168,6 +185,10 @@ func serializeCompat(stream serialize.Stream, data *compatData) error {
 	stream.SerializeBits64(&data.bits33, 33)
 	stream.SerializeInt64(&data.int64Full, math.MinInt64, math.MaxInt64)
 	stream.SerializeInt64(&data.int64Range, -5000000000, +5000000000)
+	// the wide fixed pair: bounds and values mirrored in cpp/compat.cpp, which
+	// drives serialize_fixed over serialize::int128_t storage
+	stream.SerializeFixed128(&data.fixedQ112_16Wide, 112, 16, -144115188075855872, +144115188075855872) // ±2^57 units: 75 bits, three groups
+	stream.SerializeFixed128(&data.fixedQ64_64Wide, 64, 64, math.MinInt64, math.MaxInt64)               // full unit range: 128 bits, four groups
 	// the end of the object: nothing on write, and on read the stream must hold exactly
 	// the packet, with zero padding in its final byte (STANDARD.md end)
 	stream.SerializeEnd()

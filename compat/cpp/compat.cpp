@@ -37,6 +37,15 @@
     construction, routing a field through the precomputed one changes no byte of
     this harness's output — that unchanged output is the claim, measured.
 
+    The last two fields are the wide fixed point pair, mirrored from the golden wire
+    values in serialize_test.go: a Q112.16 value at 75 bits (three 32-bit groups) and
+    a Q64.64 value over the full unit range at 128 bits (four groups, every group
+    distinct). Until they existed the wide fixed codec was proven inside each
+    language and against the vendored corpus, but nowhere across the Go/C++ boundary:
+    a group-order or remainder-placement divergence in the 128 bit codec would have
+    passed every gate. Fixed point is exact, so the reader recovers the written
+    values bit for bit.
+
     Any change to the value sequence must be mirrored in ../main.go, and never changes
     the wire format: see CLAUDE.md invariant 1.
 */
@@ -76,6 +85,8 @@ struct CompatData
     uint64_t bits33;
     int64_t int64Full;
     int64_t int64Range;
+    serialize::int128_t fixedQ112_16Wide;
+    serialize::int128_t fixedQ64_64Wide;
 
     void Init()
     {
@@ -108,6 +119,11 @@ struct CompatData
         bits33 = 0x1DEADBEEFULL;
         int64Full = -123456789012345LL;
         int64Range = 4123456789LL;
+        // the golden wire wide fixed values (../main.go): negative with a
+        // non-zero fraction over a negative raw minimum, and a 128 bit raw value
+        // whose four 32-bit groups are all distinct
+        fixedQ112_16Wide = serialize::int128_t( -( 98765432109LL * 65536 + 4321 ) ); // -98765432109.066 in Q112.16: 75 bits, three groups
+        fixedQ64_64Wide = ( serialize::int128_t( 0x0123456789ABCDEFULL ) << 64 ) + serialize::int128_t( 0x0FEDCBA987654321ULL ); // Q64.64 over the full unit range: 128 bits, four groups
     }
 
     // What a conformant reader recovers from the wire. Differs from Init only in
@@ -159,6 +175,10 @@ struct CompatData
         serialize_bits( stream, bits33, 33 );
         serialize_int64( stream, int64Full, INT64_MIN, INT64_MAX );
         serialize_int64( stream, int64Range, -5000000000LL, +5000000000LL );
+        // the wide fixed pair: bounds and values mirrored in ../main.go, which
+        // drives SerializeFixed128 over serialize.Int128 storage
+        serialize_fixed( stream, fixedQ112_16Wide, 112, 16, -144115188075855872LL, +144115188075855872LL ); // ±2^57 units: 75 bits, three groups
+        serialize_fixed( stream, fixedQ64_64Wide, 64, 64, INT64_MIN, INT64_MAX );               // full unit range: 128 bits, four groups
         // the end of the object: nothing on write, and on read the stream must hold
         // exactly the packet, with zero padding in its final byte (STANDARD.md end)
         serialize_end( stream );
@@ -193,7 +213,9 @@ struct CompatData
             && strcmp( text, other.text ) == 0
             && bits33 == other.bits33
             && int64Full == other.int64Full
-            && int64Range == other.int64Range;
+            && int64Range == other.int64Range
+            && fixedQ112_16Wide == other.fixedQ112_16Wide
+            && fixedQ64_64Wide == other.fixedQ64_64Wide;
     }
 };
 
