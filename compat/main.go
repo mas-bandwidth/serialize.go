@@ -10,7 +10,7 @@
 //
 // The sequence includes a degenerate range (min == max), which costs zero bits: it
 // must round trip across both languages while leaving every downstream field on
-// exactly the bit it was on before. It sits at serialize call 7 of 31, so 24 calls
+// exactly the bit it was on before. It sits at serialize call 7 of 46, so 39 calls
 // follow it -- the point is not that it is central but that a great many fields come
 // after it, every one of which would shift and fail the round trip if the degenerate
 // range ever started consuming bit space. That is why adding it did not change a
@@ -145,7 +145,7 @@ func initCompatData() compatData {
 		int128Full: serialize.Int128From64(0x0123456789ABCDEF).Lsh(64).
 			Add(serialize.Int128From64(0x0FEDCBA987654321)),
 		fixedQ8_8:              -(3*256 + 64),             // -3.25 in Q8.8: 16 bits, one group
-		fixedQ16_16:            1234*65536 + 32768,        // 1234.5 in Q16.16: 29 bits, one group
+		fixedQ16_16:            1234*65536 + 32768,        // 1234.5 in Q16.16: 28 bits, one group
 		fixedQ48_16:            -(54321*65536 + 12345),    // -54321.1883697509765625 in Q48.16: 34 bits, two groups
 		fixedQ16_16Unsigned:    29999*65536 + 65535,       // near top of [0, 30000] in unsigned Q16.16: 31 bits, one group
 		fixedQ48_16Degenerate:  -(int64(7) << 16),         // -7.0 in Q48.16 with min == max: zero bits on the wire
