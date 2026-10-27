@@ -138,8 +138,24 @@ var conformanceControls = []conformanceControl{
 		// The rule is SerializeObject's entry check and its exit together: delete the entry
 		// alone and the exit still returns the latch, so an empty object on a failed stream
 		// refuses anyway and the sabotage deletes nothing. Both go, as one rule.
-		needle: "\tif s.err != nil {\n\t\treturn s.err\n\t}\n\tif err := object.Serialize(s); err != nil {\n\t\treturn s.fail(err)\n\t}\n\treturn s.err\n}",
-		patch:  "\tif err := object.Serialize(s); err != nil {\n\t\treturn s.fail(err)\n\t}\n\treturn nil // NEGATIVE CONTROL: a failed stream runs the callback on purpose\n}",
+		needle: "\tif s.err != nil {\n\t\treturn s.err\n\t}\n\tif err := object.Serialize(s); err != nil {\n\t\tif s.err != nil {\n\t\t\treturn s.err\n\t\t}\n\t\treturn s.fail(rejection(err))\n\t}\n\treturn s.err\n}",
+		patch:  "\tif err := object.Serialize(s); err != nil {\n\t\tif s.err != nil {\n\t\t\treturn s.err\n\t\t}\n\t\treturn s.fail(rejection(err))\n\t}\n\treturn nil // NEGATIVE CONTROL: a failed stream runs the callback on purpose\n}",
+	},
+	{
+		// 2.1: the 2.0 latch, which recorded the caller's own error and so named no
+		// reason. The stream is still terminal, so what goes red is the reason.
+		name:   "object-latch-rejected",
+		file:   "read_stream.go",
+		needle: "\t\treturn s.fail(rejection(err))",
+		patch:  "\t\treturn s.fail(err) // NEGATIVE CONTROL: the 2.0 latch, recording no reason, on purpose",
+	},
+	{
+		// 2.1: Reject refuses under a wire rule's name. The stream still fails and stays
+		// failed; only the reason is wrong.
+		name:   "reject-reason",
+		file:   "read_stream.go",
+		needle: "func (s *ReadStream) Reject() error {\n\treturn s.fail(ErrRejected)",
+		patch:  "func (s *ReadStream) Reject() error {\n\treturn s.fail(ErrValueOutOfRange) // NEGATIVE CONTROL: the wrong reason on purpose",
 	},
 }
 

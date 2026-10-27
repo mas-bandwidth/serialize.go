@@ -200,7 +200,9 @@ checkout instead of the vendored copy, and fails on any drift. Dispatch with
   single-method interfaces use -er (`Serializer`).
 - Errors are the `Refusal` constants, one per STANDARD.md reason (ErrPastEnd,
   ErrValueOutOfRange, ErrNonzeroPadding, ErrTrailingData, ErrNonFiniteFloat,
-  ErrInvalidUTF8, ErrEmbeddedNul, ErrNonCanonical) — comparable values, no allocation.
+  ErrInvalidUTF8, ErrEmbeddedNul, ErrNonCanonical, ErrRejected) — comparable values, no allocation
+  (the one exception: a read object whose Serialize returns its own error latches a
+  wrapper that is ErrRejected and unwraps to that error, allocated on that refusal only).
 - On read failure values are left unmodified (matches C++; documented).
 - Comment style follows the C++ library's voice; doc comments explain contracts.
 - gofmt, not gofumpt: gofumpt was evaluated and rejected because it explodes the

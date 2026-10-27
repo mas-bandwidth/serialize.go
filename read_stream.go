@@ -511,14 +511,31 @@ func (s *ReadStream) SerializeEnd() error {
 }
 
 // SerializeObject reads an object that implements Serializer.
+//
+// An object whose Serialize method returns an error when nothing inside it refused is the
+// caller refusing the value (STANDARD.md, "Refusal reasons", rejected): the stream latches
+// ErrRejected, wrapping the returned error so errors.Is and errors.As still reach it, and
+// a returned Refusal from the closed list latches as itself. When a read inside the object
+// refused first, that first reason is kept.
 func (s *ReadStream) SerializeObject(object Serializer) error {
 	if s.err != nil {
 		return s.err
 	}
 	if err := object.Serialize(s); err != nil {
-		return s.fail(err)
+		if s.err != nil {
+			return s.err
+		}
+		return s.fail(rejection(err))
 	}
 	return s.err
+}
+
+// Reject refuses the read as the caller's own decision, a value whose bytes were well
+// formed and which the caller will not accept (STANDARD.md, "Refusal reasons", rejected).
+// It latches ErrRejected through the same latch as every wire refusal, so it is terminal
+// and a stream that already refused keeps its first reason. It returns the latched error.
+func (s *ReadStream) Reject() error {
+	return s.fail(ErrRejected)
 }
 
 // SerializeIntRelative reads *current relative to previous. previous is the caller's own

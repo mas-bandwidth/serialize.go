@@ -32,6 +32,7 @@ func TestRefusalNames(t *testing.T) {
 		{ErrInvalidUTF8, "invalid_utf8"},
 		{ErrEmbeddedNul, "embedded_nul"},
 		{ErrNonCanonical, "non_canonical"},
+		{ErrRejected, "rejected"},
 	}
 	if len(want) != len(refusalNames)-1 {
 		t.Fatalf("the closed list holds %d reasons, this test names %d", len(refusalNames)-1, len(want))

@@ -19,6 +19,8 @@ Format 2.0 is a major version of this module, `github.com/mas-bandwidth/serializ
 * `int_relative`'s absolute tier carrying a difference a bounded tier takes is refused with `ErrNonCanonical`.
 * Every refusal names its rule. The errors are values of type `Refusal`, one per reason in STANDARD.md's closed list, and `Refusal.String` spells the reason exactly as the standard does (`past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`). `ErrOverflow` is now `ErrPastEnd` and `ErrAlign` is now `ErrNonzeroPadding`; a string with a NUL is `ErrEmbeddedNul` and one that is not UTF-8 is `ErrInvalidUTF8`, where 1.1 said `ErrValueOutOfRange` for both.
 
+Standard 2.1 (still format 2.0, so the wire is unchanged) adds the ninth reason, `rejected` (`ErrRejected`): the caller's own refusal of a value whose bytes were well formed. Call `ReadStream.Reject`, or `serialize.Reject(stream)` from a unified serialize function, to refuse a read; a nested object whose `Serialize` method returns an error with nothing refused inside it latches `ErrRejected` too, wrapping that error so `errors.Is` still finds it. It goes through the same latch as every other refusal, so it is terminal and the first reason wins. On a write or measure stream `Reject` latches nothing and returns `ErrRejected`.
+
 It has the following features:
 
 * Serialize a bool with only one bit
