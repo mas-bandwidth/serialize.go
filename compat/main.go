@@ -398,7 +398,7 @@ func read(path string) error {
 	corruptRangeStream := serialize.NewReadStream(corruptRange)
 	corruptRangeData := sentinel
 	if err := serializeCompat(corruptRangeStream, &corruptRangeData); !errors.Is(err, serialize.ErrValueOutOfRange) {
-		return fmt.Errorf("negative control (out-of-range high group on fixedQ112_16Wide) err = %v, want ErrValueOutOfRange", err)
+		return fmt.Errorf("negative control (out-of-range high group on fixedQ112_16Wide) err = %w, want ErrValueOutOfRange", err)
 	}
 	if corruptRangeData.fixedQ64_64Wide != sentinel.fixedQ64_64Wide {
 		return fmt.Errorf("negative control (out-of-range high group on fixedQ112_16Wide) mutated trailing fixedQ64_64Wide")
