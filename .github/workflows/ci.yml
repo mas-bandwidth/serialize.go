@@ -206,8 +206,9 @@ jobs:
       # trippable. v2.0.0 is the first release implementing format 2.0, and the
       # harness now needs it: its wstring field became a UTF-8 string (wstring is
       # gone from 2.0) and both halves read serialize_end after the object.
+      # v2.0.1 (same format 2.0) adds object read terminality and is the pin.
       - name: download the pinned C++ serialize.h
-        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.0.0/serialize.h
+        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.0.1/serialize.h
       # asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse panics",
       # and the degenerate range must pass with them enabled, not around them.
       - name: build the C++ harness
