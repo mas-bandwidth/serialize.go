@@ -132,6 +132,15 @@ var conformanceControls = []conformanceControl{
 		needle: "\t\treturn s.fail(ErrEmbeddedNul)",
 		patch:  "\t\treturn s.fail(ErrInvalidUTF8) // NEGATIVE CONTROL: the wrong reason on purpose",
 	},
+	{
+		name: "object-terminal",
+		file: "read_stream.go",
+		// The rule is SerializeObject's entry check and its exit together: delete the entry
+		// alone and the exit still returns the latch, so an empty object on a failed stream
+		// refuses anyway and the sabotage deletes nothing. Both go, as one rule.
+		needle: "\tif s.err != nil {\n\t\treturn s.err\n\t}\n\tif err := object.Serialize(s); err != nil {\n\t\treturn s.fail(err)\n\t}\n\treturn s.err\n}",
+		patch:  "\tif err := object.Serialize(s); err != nil {\n\t\treturn s.fail(err)\n\t}\n\treturn nil // NEGATIVE CONTROL: a failed stream runs the callback on purpose\n}",
+	},
 }
 
 // controlsNotApplicable are the vendored lists this port cannot hold a sabotage to,

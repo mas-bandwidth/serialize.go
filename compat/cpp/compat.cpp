@@ -4,14 +4,14 @@
     PR: each side writes its stream to a file, the two files must be byte identical,
     and each side must read the other's file back to the exact values.
 
-    Download serialize.h (v2.0.0) from github.com/mas-bandwidth/serialize into this
+    Download serialize.h (v2.0.1) from github.com/mas-bandwidth/serialize into this
     directory, then build and run:
 
-        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.0.0/serialize.h
+        curl -O https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.0.1/serialize.h
         c++ -O2 -std=c++17 -Wall -o compat compat.cpp
         ./compat write cpp.bin && ./compat read cpp.bin
 
-    The pin is v2.0.0, the same release ci.yml downloads, and it never moves
+    The pin is v2.0.1, the same release ci.yml downloads, and it never moves
     backwards past the floors underneath it. It must be at least v2.0.0, the first
     release implementing format version 2.0: wstring is gone and serialize_end is
     new, and this harness uses both facts. It must be at least v1.7.0, the C++
