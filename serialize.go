@@ -37,9 +37,16 @@
 // version 2.0: the wire carries only integers and bytes, and every value has exactly one
 // encoding.
 //
+// Writes are the caller's responsibility. Write and measure misuse — a value outside its
+// range or bit width, a non-finite float, double or compressed float value, a bad
+// declaration, string text that is ill-formed, holds a NUL or is too long, a write that
+// does not fit the buffer — panics at the call (IMPLEMENTING.md U9, the trap; Go has no
+// unchecked build, so it traps in every run). A write or measure stream records
+// nothing: its Err is always nil. Use CopyString to bound a string to a buffer size.
+//
 // Values read from a stream are untrusted network data: every read is bounds checked and
 // range validated, and the first failure latches an error on the stream, a Refusal that
-// names the rule that refused it. A packet reader reads the top level object and then
+// names the rule that refused it. A read stream never panics. A packet reader reads the top level object and then
 // calls SerializeEnd, which refuses trailing bytes and set padding in the final byte. The failure is
 // terminal, as the format requires, and only ReadStream.Reset clears it. Serialize methods
 // return that error and become no-ops once it is set, so you can either check each call or
@@ -53,6 +60,7 @@ package serialize
 import (
 	"errors"
 	"math/bits"
+	"strings"
 )
 
 // Refusal names the rule that refused a read, from the closed list in STANDARD.md,
@@ -68,14 +76,15 @@ import (
 type Refusal uint8
 
 const (
-	// ErrPastEnd is a read that needs more bits than the stream holds, or a write that
-	// would go past the end of the buffer.
+	// ErrPastEnd is a read that needs more bits than the stream holds. (A write that
+	// would go past the end of the buffer is write misuse and panics: the refusal
+	// reasons are a reader's, IMPLEMENTING.md U9.)
 	ErrPastEnd Refusal = iota + 1
 
 	// ErrValueOutOfRange is a decoded value outside its declared range or domain: a
 	// ranged offset past its span, a string length past its buffer, a compressed
-	// integer past its maximum, an int_relative outside its domain or not increasing.
-	// On write it is a value outside the range it is serialized with.
+	// integer past its maximum, an int_relative outside its domain or not increasing,
+	// or a bad declaration on read (IMPLEMENTING.md U7, U16).
 	ErrValueOutOfRange
 
 	// ErrNonzeroPadding is a set bit in an align's padding, or in the unused bits of
@@ -88,7 +97,7 @@ const (
 
 	// ErrNonFiniteFloat is a float or double that is NaN or an infinity, or a
 	// compressed float decode that is not finite. The format carries finite values
-	// only, so a write of a non-finite float or double fails with it too.
+	// only; a write of one is write misuse and panics.
 	ErrNonFiniteFloat
 
 	// ErrInvalidUTF8 is a string payload that is not well-formed UTF-8.
@@ -178,7 +187,7 @@ func rejection(err error) error {
 // RefusalName returns the family name of a stream's error (IMPLEMENTING.md U14): "none"
 // for nil, a stream that has not refused, and the STANDARD.md spelling for a Refusal,
 // including the rejected wrapper a read object latches. It returns "" for any other
-// error, which only a writer or a measure latches, from a caller's own Serialize.
+// error, which only a caller's own Serialize returns.
 func RefusalName(err error) string {
 	if err == nil {
 		return refusalNames[0]
@@ -202,8 +211,9 @@ func closedRefusal(reason Refusal) Refusal {
 // Fail refuses a read with a reason of the caller's choosing, from a serialize function
 // written once for every stream (IMPLEMENTING.md U14): on a ReadStream it is
 // ReadStream.Fail. On a WriteStream or MeasureStream there is nothing to refuse, so it
-// latches nothing, never panics (U9), and returns the reason, ErrRejected for one
-// outside the closed list, which a serialize function returns as its own error.
+// records nothing, never panics (IMPLEMENTING.md U9), and returns its false: the reason,
+// ErrRejected for one outside the closed list, which a serialize function returns as its
+// own error.
 func Fail(stream Stream, reason Refusal) error {
 	if reader, ok := stream.(*ReadStream); ok {
 		return reader.Fail(reason)
@@ -213,17 +223,21 @@ func Fail(stream Stream, reason Refusal) error {
 
 // Reject refuses a read as the caller's own decision, from a serialize function written
 // once for every stream: on a ReadStream it is ReadStream.Reject, latching ErrRejected.
-// On a WriteStream or MeasureStream there is nothing to refuse, so it latches nothing and
-// returns ErrRejected, which a serialize function returns as its own error.
+// Reject is read only: on a WriteStream or MeasureStream there is nothing to refuse, so
+// calling it there is caller misuse and panics (IMPLEMENTING.md U9), as the reference's
+// serialize_reject asserts. A serialize function that may refuse on every stream
+// guards it with stream.IsReading(), or calls Fail, which never panics.
 func Reject(stream Stream) error {
 	if reader, ok := stream.(*ReadStream); ok {
 		return reader.Reject()
 	}
-	return ErrRejected
+	panic(panicRejectOnWrite)
 }
 
-// Panic messages for API misuse. These indicate programmer error, never bad packet data,
-// so they panic like the debug asserts in the C++ library rather than returning an error.
+// Panic messages for write and measure misuse. These indicate programmer error, never
+// bad packet data, so they panic like the debug asserts in the C++ library rather than
+// returning an error: this is the port's trap (IMPLEMENTING.md U9), and since Go has no
+// unchecked build it traps in every run. A read stream never panics (U7).
 const (
 	panicBitsRange             = "serialize: bits must be in [1,32]"
 	panicBitsRange64           = "serialize: bits must be in [1,64]"
@@ -239,7 +253,43 @@ const (
 	panicReadOverflow          = "serialize: bit reader would read past the end of the buffer"
 	panicNotAligned            = "serialize: byte array serialization requires byte alignment"
 	panicBufferBytes           = "serialize: bit writer buffer size must be a multiple of 8 bytes"
+	panicCopyStringDestSize    = "serialize: copy string destination size must be at least 1"
+	panicValueOutOfRange       = "serialize: write of a value outside its declared range"
+	panicValueTooWide          = "serialize: write of a value wider than its bit width"
+	panicNonFiniteFloat        = "serialize: write of a float value that is NaN or an infinity"
+	panicStringTooLong         = "serialize: write of a string longer than buffer size - 1"
+	panicInvalidUTF8           = "serialize: write of a string that is not well-formed UTF-8"
+	panicEmbeddedNul           = "serialize: write of a string holding a NUL"
+	panicIntRelativeOrder      = "serialize: int relative current must be greater than previous"
+	panicRejectOnWrite         = "serialize: reject on a write or measure stream is caller misuse"
 )
+
+// CopyString is the reference's serialize_copy_string (IMPLEMENTING.md U15): the
+// longest prefix of source that fits a string buffer of destSize bytes, terminator
+// included, without ending inside a character. It takes the bytes before the first
+// NUL; if there are more than destSize - 1 of them it keeps the first destSize - 1 and
+// then drops bytes from the end while the first byte left out is a UTF-8 continuation
+// byte (10xxxxxx). For well-formed UTF-8 the result is text SerializeString with
+// bufferSize = destSize accepts. A Go string is a value and assignment copies it but
+// does not bound it, so the helper returns the prefix; the rule is on bytes, so it
+// applies to any input, ill-formed text included. destSize below 1 is write misuse
+// and panics (U9). The result shares source's memory: it allocates nothing.
+func CopyString(source string, destSize int) string {
+	if destSize < 1 {
+		panic(panicCopyStringDestSize)
+	}
+	if nul := strings.IndexByte(source, 0); nul >= 0 {
+		source = source[:nul]
+	}
+	if len(source) <= destSize-1 {
+		return source
+	}
+	n := destSize - 1
+	for n > 0 && source[n]&0xC0 == 0x80 {
+		n--
+	}
+	return source[:n]
+}
 
 // BitsRequired returns the number of bits required to serialize an integer in range [min,max].
 func BitsRequired(min, max uint32) int {

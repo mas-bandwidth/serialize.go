@@ -816,24 +816,16 @@ func TestCompressedFloatValidation(t *testing.T) {
 		}
 	}
 
-	// a NaN value must quantize into range rather than corrupt the stream
+	// a NaN value is write misuse and panics, never clamped into range
+	// (IMPLEMENTING.md U9; the C++ test_compressed_float_non_finite_asserts)
 	{
-		buffer := make([]byte, 8)
-
-		writeStream := NewWriteStream(buffer)
+		writeStream := NewWriteStream(make([]byte, 8))
 		written := math.Float32frombits(0x7fc00000) // quiet NaN
-		if err := writeStream.SerializeCompressedFloat32(&written, 0, 10, 0.01); err != nil {
-			t.Fatal(err)
+		if !panics(func() { writeStream.SerializeCompressedFloat32(&written, 0, 10, 0.01) }) {
+			t.Fatal("a NaN compressed float write did not panic")
 		}
-		writeStream.Flush()
-
-		readStream := NewReadStream(buffer)
-		value := float32(-1.0)
-		if err := readStream.SerializeCompressedFloat32(&value, 0, 10, 0.01); err != nil {
-			t.Fatal(err)
-		}
-		if !(value >= 0.0 && value <= 10.0) { // NaN clamps to the low end of the range
-			t.Fatalf("expected value in [0,10], got %f", value)
+		if writeStream.BitsProcessed() != 0 {
+			t.Fatalf("a NaN write wrote %d bits", writeStream.BitsProcessed())
 		}
 	}
 }
@@ -1207,20 +1199,20 @@ func TestWriteOverflow(t *testing.T) {
 	if err := stream.SerializeBits(&v, 32); err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.SerializeBits(&v, 1); !errors.Is(err, ErrPastEnd) {
-		t.Fatalf("expected ErrPastEnd, got %v", err)
+	// a write past the end is write misuse: it panics and writes nothing (U9, U10),
+	// and a write stream records nothing
+	if !panics(func() { stream.SerializeBits(&v, 1) }) {
+		t.Fatal("a write past the end did not panic")
 	}
-
-	// the error is sticky: every later call reports it without touching the stream
 	flag := true
-	if err := stream.SerializeBool(&flag); !errors.Is(err, ErrPastEnd) {
-		t.Fatalf("expected sticky ErrPastEnd, got %v", err)
+	if !panics(func() { stream.SerializeBool(&flag) }) {
+		t.Fatal("a second write past the end did not panic")
 	}
-	if !errors.Is(stream.Err(), ErrPastEnd) {
-		t.Fatal("expected the error to latch on the stream")
+	if stream.Err() != nil {
+		t.Fatalf("a write past the end latched %v", stream.Err())
 	}
 	if stream.BitsProcessed() != 64 {
-		t.Fatal("failed serialize calls must not advance the stream")
+		t.Fatal("a write past the end must not advance the stream")
 	}
 }
 
@@ -1265,13 +1257,13 @@ func TestSerializeStringRoundTrip(t *testing.T) {
 		}
 	}
 
-	// strings that don't fit in the buffer size must be rejected on write
+	// a string that does not fit the buffer size is write misuse and panics (U9)
 	{
 		buffer := make([]byte, 512)
 		writeStream := NewWriteStream(buffer)
-		tooLong := string(make([]byte, 256))
-		if err := writeStream.SerializeString(&tooLong, 256); !errors.Is(err, ErrValueOutOfRange) {
-			t.Fatalf("expected ErrValueOutOfRange, got %v", err)
+		tooLong := strings.Repeat("x", 256)
+		if !panics(func() { writeStream.SerializeString(&tooLong, 256) }) {
+			t.Fatal("a string longer than bufferSize-1 did not panic")
 		}
 	}
 }
@@ -1738,8 +1730,9 @@ func TestSerializeObjectErrorPropagation(t *testing.T) {
 	if err := stream.SerializeObject(&failingObject{}); !errors.Is(err, errCustomValidation) {
 		t.Fatalf("expected custom error, got %v", err)
 	}
-	if !errors.Is(stream.Err(), errCustomValidation) {
-		t.Fatal("expected the custom error to latch on the stream")
+	// a write stream records nothing: the object's error is returned, not latched (U9)
+	if stream.Err() != nil {
+		t.Fatalf("the object's error latched on a write stream: %v", stream.Err())
 	}
 }
 

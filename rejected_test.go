@@ -113,19 +113,19 @@ func TestObjectInnerRefusalWins(t *testing.T) {
 	}
 }
 
-// IMPLEMENTING.md U2 and U9: reject on a writer or a measure has nothing to refuse. It
-// returns ErrRejected, latches nothing and never panics.
+// IMPLEMENTING.md U2 and U9: reject is read only. On a writer or a measure it is caller
+// misuse: it panics, the trap, and latches nothing.
 func TestRejectOnWriteAndMeasure(t *testing.T) {
 	w := NewWriteStream(make([]byte, 8))
-	if err := Reject(w); !errors.Is(err, ErrRejected) {
-		t.Fatalf("Reject on a writer returned %v", err)
+	if !panics(func() { Reject(w) }) {
+		t.Fatal("Reject on a writer did not panic")
 	}
 	if w.Err() != nil {
 		t.Fatalf("Reject on a writer latched %v", w.Err())
 	}
 	m := NewMeasureStream()
-	if err := Reject(m); !errors.Is(err, ErrRejected) {
-		t.Fatalf("Reject on a measure returned %v", err)
+	if !panics(func() { Reject(m) }) {
+		t.Fatal("Reject on a measure did not panic")
 	}
 	if m.Err() != nil {
 		t.Fatalf("Reject on a measure latched %v", m.Err())

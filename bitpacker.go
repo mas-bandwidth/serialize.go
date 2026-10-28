@@ -77,14 +77,18 @@ func (w *BitWriter) writeBits(value uint32, bits int) {
 
 // WriteBits writes the low order bits of value to the buffer, without padding to the
 // nearest byte. A boolean value writes just 1 bit, a value in [0,31] can be written with
-// just 5 bits and so on. bits must be in [1,32]; bits of value above that count are
-// ignored. Panics if the write would go past the end of the buffer.
+// just 5 bits and so on. bits must be in [1,32], and value must fit in bits: a wider
+// value panics, as the reference's BitWriter asserts (IMPLEMENTING.md U8, U9). Panics if
+// the write would go past the end of the buffer.
 //
 // IMPORTANT: When you have finished writing, call FlushBits, otherwise the last word of
 // data will not get flushed to memory!
 func (w *BitWriter) WriteBits(value uint32, bits int) {
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
+	}
+	if value > ^uint32(0)>>(32-bits) {
+		panic(panicValueTooWide)
 	}
 	if w.bitsWritten+int64(bits) > w.numBits {
 		panic(panicWriteOverflow)

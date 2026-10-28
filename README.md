@@ -12,22 +12,33 @@ The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbat
 
 Format 2.0 is a major version of this module, `github.com/mas-bandwidth/serialize.go/v2`. What changed from 1.1, and what it breaks:
 
-* `float` and `double` carry finite values only. NaN and the infinities are refused on read with `ErrNonFiniteFloat`, and refused on write too. Negative zero and the subnormals travel bit exact.
+* `float` and `double` carry finite values only. NaN and the infinities are refused on read with `ErrNonFiniteFloat`, and are write misuse on write: since 2.1.1 the writer panics on them. Negative zero and the subnormals travel bit exact.
 * A `compressed_float` decode that is not finite is refused with `ErrNonFiniteFloat`, and a declaration whose top decodes to an infinity panics on write.
 * `SerializeWideString` is gone. Text travels as `SerializeString`, which is UTF-8.
 * `SerializeEnd` is new, on every stream and on the `Stream` interface. A packet reader calls it after the top level object: it refuses a byte left over with `ErrTrailingData` and a set padding bit with `ErrNonzeroPadding`.
 * `int_relative`'s absolute tier carrying a difference a bounded tier takes is refused with `ErrNonCanonical`.
 * Every refusal names its rule. The errors are values of type `Refusal`, one per reason in STANDARD.md's closed list, and `Refusal.String` spells the reason exactly as the standard does (`past_end`, `value_out_of_range`, `nonzero_padding`, `trailing_data`, `non_finite_float`, `invalid_utf8`, `embedded_nul`, `non_canonical`). `ErrOverflow` is now `ErrPastEnd` and `ErrAlign` is now `ErrNonzeroPadding`; a string with a NUL is `ErrEmbeddedNul` and one that is not UTF-8 is `ErrInvalidUTF8`, where 1.1 said `ErrValueOutOfRange` for both.
 
-Standard 2.1 (still format 2.0, so the wire is unchanged) adds the ninth reason, `rejected` (`ErrRejected`): the caller's own refusal of a value whose bytes were well formed. Call `ReadStream.Reject`, or `serialize.Reject(stream)` from a unified serialize function, to refuse a read; a nested object whose `Serialize` method returns an error with nothing refused inside it latches `ErrRejected` too, wrapping that error so `errors.Is` still finds it. It goes through the same latch as every other refusal, so it is terminal and the first reason wins. On a write or measure stream `Reject` latches nothing and returns `ErrRejected`.
+Standard 2.1 (still format 2.0, so the wire is unchanged) adds the ninth reason, `rejected` (`ErrRejected`): the caller's own refusal of a value whose bytes were well formed. Call `ReadStream.Reject`, or `serialize.Reject(stream)` from a unified serialize function, to refuse a read; a nested object whose `Serialize` method returns an error with nothing refused inside it latches `ErrRejected` too, wrapping that error so `errors.Is` still finds it. It goes through the same latch as every other refusal, so it is terminal and the first reason wins. `Reject` is read only: on a write or measure stream it is caller misuse and, since 2.1.1, panics; `Fail` is the call that works on every stream.
 
 Standard 2.1 also makes the family's uniform rules normative (IMPLEMENTING.md U1 to U16), and this release keeps them, each proved in `uniform_test.go`:
 
 * A read stream never panics, whatever the caller declares. A bad declaration on read (a bit count outside its range, `min > max`, a fixed point bound outside its Q format, a compressed float declaration or precomputed constants that cannot be derived, a string `bufferSize` below 1, a negative `int_relative` `previous`) refuses with `ErrValueOutOfRange`, and a stream that already refused keeps its first reason. The write and measure streams still panic on the same declarations.
-* A writer never sends bytes that differ from the caller's value: `SerializeBits` and `SerializeBits64` refuse a value wider than its field with `ErrValueOutOfRange` instead of masking it, and `SerializeString` refuses text with a NUL (`ErrEmbeddedNul`) or that is not well-formed UTF-8 (`ErrInvalidUTF8`) on write and measure, the reasons a reader would give.
-* `SerializeBytes` and `SerializeString` check room for the whole operation before writing any of it, so a refused write leaves no length or align bits behind.
+* A writer never sends bytes that differ from the caller's value: `SerializeBits` and `SerializeBits64` catch a value wider than its field instead of masking it, and `SerializeString` catches text with a NUL or that is not well-formed UTF-8, on write and measure. Since 2.1.1 each of these panics (below).
+* `SerializeBytes` and `SerializeString` check room for the whole operation before writing any of it, so a write that does not fit leaves no length or align bits behind.
 * A compressed float declaration whose `delta` or `delta / resolution` is not finite panics on write and measure, and the measure stream panics on a top decode that is not finite, as the writer already did. Precomputed constants must have `maxIntegerValue` in `[1, 4294967040]`.
 * `ReadStream.Fail(reason)`, and `serialize.Fail(stream, reason)` from a unified serialize function, refuse a read with a reason of your choosing; a reason outside the closed list latches `ErrRejected`. `RefusalName(err)` gives the family name of any stream error, `"none"` for nil.
+
+Standard 2.1.1 (still format 2.0, the wire is unchanged) settles write misuse on one mechanism for the whole family, the trap (IMPLEMENTING.md U9). **Write and measure misuse panics at the call**, before any bit of the operation is written, and a write or measure stream records nothing. This breaks callers that checked a write's error for misuse: in 2.1.0 these returned and latched an error, and now they panic:
+
+* a value outside its range (`SerializeInt`, `SerializeInt64`, `SerializeInt128`, `SerializeFixed64`, `SerializeFixed128`) or wider than its bit width (`SerializeBits`, `SerializeBits64`, and `BitWriter.WriteBits`, which used to mask);
+* a `float`, `double` or `compressed_float` value that is NaN or an infinity (`compressed_float` used to clamp it into range);
+* string text longer than `bufferSize - 1`, holding a NUL, or not well-formed UTF-8;
+* an `int_relative` whose `current` is not above `previous`;
+* a write that does not fit the room left in the buffer (`ErrPastEnd` is a reader's reason only now);
+* `Reject` on a write or measure stream.
+
+Go has no unchecked build, so the trap fires in every run, as the C++ reference's asserts do in a debug build. The read stream is unchanged: it never panics, and every refusal is a value. `WriteStream.Err` and `MeasureStream.Err` always return nil. `Fail` on a write or measure stream returns its error and records nothing, and a nested object whose `Serialize` returns an error on a write or measure makes `SerializeObject` return that error, recorded nowhere. The new `CopyString(source, destSize)` is the reference's `serialize_copy_string`: the longest prefix of `source` that fits a `destSize` byte string buffer without ending inside a character, so you can bound a string before writing it (IMPLEMENTING.md U15).
 
 It has the following features:
 
@@ -155,7 +166,9 @@ bytesRequired := measureStream.BytesProcessed()
 
 A packet reader must read the end after the top level object (STANDARD.md, "end"). Without it, trailing bytes and padding go unexamined, and one value no longer has exactly one byte sequence. The end writes nothing and measures nothing, so a unified serialize function for a whole packet can carry it too.
 
-Errors are sticky: the first failure latches on the stream and every later serialize call returns it without touching the stream. That is why serialize functions can simply call one serialize method per field and return `stream.Err()` at the end — or check every call, if you prefer early exits.
+On a read stream errors are sticky: the first failure latches on the stream and every later serialize call returns it without touching the stream. That is why serialize functions can simply call one serialize method per field and return `stream.Err()` at the end — or check every call, if you prefer early exits.
+
+Writes are the caller's responsibility. On a write or measure stream, misuse — a value outside its range or bit width, a non-finite float, text that is too long, ill-formed or holds a NUL, a write that does not fit the buffer — **panics at the call** (IMPLEMENTING.md U9, the trap), and nothing is recorded: `Err` is always nil there. Bound a string with `serialize.CopyString(s, bufferSize)` before writing it if it may be too long.
 
 If you want separate read and write functions instead of unified ones, use the concrete `*ReadStream` and `*WriteStream` types directly: they have the same methods as the `Stream` interface, with no dynamic dispatch.
 
@@ -203,9 +216,9 @@ All serialization paths are zero allocation, with one exception: a read that con
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment.
 * Read buffers may be any number of bytes. For the fastest reads, keep at least 12 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and takes one branch per window load, selecting the window source: with slack, every load comes straight from the buffer; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted. (This number is 12 since v1.14.0 and was 7 through v1.13.0, because the 64 bit window load now reaches twelve bytes.)
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
-* `SerializeIntRelative` works in the `int_relative` domain, 0 to 2147483647 (STANDARD.md). `previous` is your own state and never arrives off the wire, so a negative `previous` is API misuse and panics. On read the reconstruction is checked in every tier: a value that leaves the domain, or that does not exceed `previous`, fails with `ErrValueOutOfRange` and leaves the destination unwritten.
+* `SerializeIntRelative` works in the `int_relative` domain, 0 to 2147483647 (STANDARD.md). `previous` is your own state and never arrives off the wire, so on write and measure a negative `previous`, or a `current` not above it, is API misuse and panics; on read a negative `previous` refuses with `ErrValueOutOfRange`. On read the reconstruction is checked in every tier: a value that leaves the domain, or that does not exceed `previous`, fails with `ErrValueOutOfRange` and leaves the destination unwritten.
 * `SerializeIntRelative`'s absolute tier carries only differences above 69914, the last bounded tier's top: one that carries a smaller difference has a second encoding, and fails with `ErrNonCanonical`.
-* `SerializeString` carries well-formed UTF-8 with no NUL, and hands a well-formed payload back byte for byte: no normalization, no replacement character, no stripped byte order mark. The writer trusts its caller, as it does for every value: it does not scan the string, so a string that breaks the rule is refused by the reader on the far side (`ErrEmbeddedNul`, `ErrInvalidUTF8`).
+* `SerializeString` carries well-formed UTF-8 with no NUL, and hands a well-formed payload back byte for byte: no normalization, no replacement character, no stripped byte order mark. The writer and the measure check it and panic on a string that breaks the rule (IMPLEMENTING.md U4, U9); a reader refuses one with `ErrEmbeddedNul` or `ErrInvalidUTF8`.
 
 # Author
 

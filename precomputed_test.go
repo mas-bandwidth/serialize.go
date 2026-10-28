@@ -247,27 +247,19 @@ func TestCompressedFloatPrecomputedValidation(t *testing.T) {
 		}
 	}
 
-	// a NaN value must quantize into range rather than corrupt the stream. The C++
-	// reference debug-asserts a non-finite write; this port's established behavior is
-	// the clamp (see SerializeCompressedFloat32Precomputed on WriteStream), and the
-	// precomputed entry point inherits it.
+	// a NaN value is write misuse and panics, never clamped into range (IMPLEMENTING.md
+	// U9: the C++ reference asserts it, and this port has no unchecked build). The
+	// precomputed entry point checks it as the derive-per-call one does.
 	{
-		buffer := make([]byte, 8)
-
-		writeStream := NewWriteStream(buffer)
+		writeStream := NewWriteStream(make([]byte, 8))
 		written := math.Float32frombits(0x7fc00000) // quiet NaN
-		if err := writeStream.SerializeCompressedFloat32Precomputed(&written, maxIntegerValue, bits, delta, 0); err != nil {
-			t.Fatal(err)
+		if !panics(func() {
+			writeStream.SerializeCompressedFloat32Precomputed(&written, maxIntegerValue, bits, delta, 0)
+		}) {
+			t.Fatal("a NaN precomputed compressed float write did not panic")
 		}
-		writeStream.Flush()
-
-		readStream := NewReadStream(buffer)
-		value := float32(-1.0)
-		if err := readStream.SerializeCompressedFloat32Precomputed(&value, maxIntegerValue, bits, delta, 0); err != nil {
-			t.Fatal(err)
-		}
-		if !(value >= 0.0 && value <= 10.0) { // NaN clamps to the low end of the range
-			t.Fatalf("expected value in [0,10], got %v", value)
+		if writeStream.BitsProcessed() != 0 {
+			t.Fatalf("a NaN write wrote %d bits", writeStream.BitsProcessed())
 		}
 	}
 }
@@ -473,10 +465,21 @@ func (d *differential) check(condition bool) {
 }
 
 // checkValue runs one written value through all four implementations: measured bits,
-// wire bytes and decoded bit patterns must agree exactly.
+// wire bytes and decoded bit patterns must agree exactly. A value that is not finite is
+// write misuse since 2.1.1 (IMPLEMENTING.md U9): the runtime forms must panic on it, on
+// the measure and the write, and the frozen and fold legs — test-local copies that keep
+// the old clamp — still agree with each other and feed the digest exactly as before, so
+// the digest proves the trap moved no finite value's wire.
 func (d *differential) checkValue(value float32) {
 	shape := d.shape
 	d.value, d.code = value, 0
+	finite := float32BitsAreFinite(math.Float32bits(value))
+	runtime := func(f func() error) bool {
+		if finite {
+			return f() == nil
+		}
+		return panics(func() { _ = f() })
+	}
 
 	// measure: the three runtime forms agree on cost (the fold has no measure form —
 	// generated code precomputes MaxBytes at generation time)
@@ -485,12 +488,18 @@ func (d *differential) checkValue(value float32) {
 	d.check(frozenCompressedFloatMeasure(measureFrozen, shape.min, shape.max, shape.res) == nil)
 	measureLegacy := NewMeasureStream()
 	measureValue := value
-	d.check(measureLegacy.SerializeCompressedFloat32(&measureValue, shape.min, shape.max, shape.res) == nil)
+	d.check(runtime(func() error {
+		return measureLegacy.SerializeCompressedFloat32(&measureValue, shape.min, shape.max, shape.res)
+	}))
 	measurePrecomputed := NewMeasureStream()
 	measureValue = value
-	d.check(measurePrecomputed.SerializeCompressedFloat32Precomputed(&measureValue, d.maxIntegerValue, d.bits, d.delta, shape.min) == nil)
-	d.check(measureFrozen.BitsProcessed() == measureLegacy.BitsProcessed())
-	d.check(measureFrozen.BitsProcessed() == measurePrecomputed.BitsProcessed())
+	d.check(runtime(func() error {
+		return measurePrecomputed.SerializeCompressedFloat32Precomputed(&measureValue, d.maxIntegerValue, d.bits, d.delta, shape.min)
+	}))
+	if finite {
+		d.check(measureFrozen.BitsProcessed() == measureLegacy.BitsProcessed())
+		d.check(measureFrozen.BitsProcessed() == measurePrecomputed.BitsProcessed())
+	}
 
 	// write: byte identical wire from all four
 	d.phase = "write"
@@ -506,13 +515,24 @@ func (d *differential) checkValue(value float32) {
 
 	writeLegacy := NewWriteStream(bufferLegacy)
 	writeValue = value
-	d.check(writeLegacy.SerializeCompressedFloat32(&writeValue, shape.min, shape.max, shape.res) == nil)
+	d.check(runtime(func() error {
+		return writeLegacy.SerializeCompressedFloat32(&writeValue, shape.min, shape.max, shape.res)
+	}))
 	writeLegacy.Flush()
 
 	writePrecomputed := NewWriteStream(bufferPrecomputed)
 	writeValue = value
-	d.check(writePrecomputed.SerializeCompressedFloat32Precomputed(&writeValue, d.maxIntegerValue, d.bits, d.delta, shape.min) == nil)
+	d.check(runtime(func() error {
+		return writePrecomputed.SerializeCompressedFloat32Precomputed(&writeValue, d.maxIntegerValue, d.bits, d.delta, shape.min)
+	}))
 	writePrecomputed.Flush()
+	if !finite {
+		// the trap wrote nothing; the runtime forms have no wire to compare
+		d.check(writeLegacy.BitsProcessed() == 0 && writePrecomputed.BitsProcessed() == 0)
+		copy(bufferLegacy, bufferFrozen)
+		copy(bufferPrecomputed, bufferFrozen)
+		writeLegacy, writePrecomputed = writeFrozen, writeFrozen
+	}
 
 	writeFold := NewWriteStream(bufferFold)
 	d.check(foldCompressedFloatWrite(writeFold, value, d.maxIntegerValue, d.bits, d.delta, shape.min) == nil)
@@ -704,10 +724,9 @@ func (d *differential) runShape(shape *compressedFloatShape, sweepSteps, lcgRoun
 		}
 	}
 
-	// non-finite inputs: NaN and both infinities. The C++ reference can only drive
-	// these in release builds (debug asserts); this port's established behavior is
-	// the clamp, in every build, so the differential drives them unconditionally —
-	// all four implementations must force them to the same wire.
+	// non-finite inputs: NaN and both infinities. Write misuse since 2.1.1 (U9): the
+	// runtime forms must panic, and the frozen and fold legs still agree on the clamp
+	// they were frozen with, so the digest is unchanged.
 	{
 		nonFinitePatterns := []uint32{0x7F800000, 0xFF800000, 0x7FC00000, 0x7F800001, 0xFFC00001}
 		for _, pattern := range nonFinitePatterns {
@@ -721,8 +740,8 @@ func (d *differential) runShape(shape *compressedFloatShape, sweepSteps, lcgRoun
 		d.checkValue(float32(dmin - 0.25*ddelta + fraction*1.5*ddelta))
 	}
 
-	// LCG uniform float32 bit patterns, finite and non-finite alike (the clamp is
-	// total in this port)
+	// LCG uniform float32 bit patterns, finite and non-finite alike (non-finite: the
+	// runtime forms trap, the frozen legs clamp)
 	for range lcgRounds {
 		d.checkValue(math.Float32frombits(uint32(next() >> 32)))
 	}

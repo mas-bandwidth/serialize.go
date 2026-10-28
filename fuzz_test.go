@@ -156,20 +156,24 @@ func FuzzRoundTrip(f *testing.F) {
 			bulk = bulk[:512]
 		}
 
-		// float and double carry finite values only (format 2.0): the writer refuses
-		// NaN and the infinities, which is checked here, and the round trip carries
-		// the finite part of the fuzzer's space bit for bit
+		// float and double carry finite values only (format 2.0): NaN and the
+		// infinities are write misuse and trap (IMPLEMENTING.md U9), which is checked
+		// here, and the round trip carries the finite part of the fuzzer's space bit
+		// for bit. The compressed float traps on them too.
 		if !float32BitsAreFinite(math.Float32bits(f32)) {
 			probe := NewWriteStream(make([]byte, 8))
-			if err := probe.SerializeFloat32(&f32); !errors.Is(err, ErrNonFiniteFloat) {
-				t.Fatalf("the writer accepted the non-finite float %#x: %v", math.Float32bits(f32), err)
+			if !panics(func() { probe.SerializeFloat32(&f32) }) {
+				t.Fatalf("the writer accepted the non-finite float %#x", math.Float32bits(f32))
+			}
+			if !panics(func() { probe.SerializeCompressedFloat32(&f32, -1000, 1000, 0.01) }) {
+				t.Fatalf("the writer accepted the non-finite compressed float %#x", math.Float32bits(f32))
 			}
 			f32 = 0
 		}
 		if !float64BitsAreFinite(math.Float64bits(f64)) {
 			probe := NewWriteStream(make([]byte, 8))
-			if err := probe.SerializeFloat64(&f64); !errors.Is(err, ErrNonFiniteFloat) {
-				t.Fatalf("the writer accepted the non-finite double %#x: %v", math.Float64bits(f64), err)
+			if !panics(func() { probe.SerializeFloat64(&f64) }) {
+				t.Fatalf("the writer accepted the non-finite double %#x", math.Float64bits(f64))
 			}
 			f64 = 0
 		}
