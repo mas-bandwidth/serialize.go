@@ -207,9 +207,10 @@ jobs:
       # harness now needs it: its wstring field became a UTF-8 string (wstring is
       # gone from 2.0) and both halves read serialize_end after the object.
       # v2.0.1 (same format 2.0) added object read terminality; v2.1.0 (standard
-      # 2.1, still format 2.0) adds the rejected reason and is the pin.
+      # 2.1, still format 2.0) adds the rejected reason; v2.1.1 (the U9 trap and
+      # copy_string rulings, same wire) is the pin.
       - name: download the pinned C++ serialize.h
-        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.1.0/serialize.h
+        run: curl -fsSL --retry 3 -o compat/cpp/serialize.h https://raw.githubusercontent.com/mas-bandwidth/serialize/v2.1.1/serialize.h
       # asserts stay ON (no -DNDEBUG): they are the C++ half of "API misuse panics",
       # and the degenerate range must pass with them enabled, not around them.
       - name: build the C++ harness
