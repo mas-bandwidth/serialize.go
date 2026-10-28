@@ -758,10 +758,10 @@ func TestIntRelativeValidation(t *testing.T) {
 	}
 
 	// a previous outside the domain is the caller's own state gone wrong, never packet
-	// data, so it is API misuse on every stream
+	// data: API misuse on write and measure, and a value_out_of_range refusal on read
+	// (IMPLEMENTING.md U7, U16; TestU7ReadDeclarationMisuseRefuses)
 	{
 		for name, call := range map[string]func(){
-			"read":    func() { var v int32; NewReadStream(make([]byte, 8)).SerializeIntRelative(-1, &v) },
 			"write":   func() { v := int32(5); NewWriteStream(make([]byte, 8)).SerializeIntRelative(-1, &v) },
 			"measure": func() { v := int32(5); NewMeasureStream().SerializeIntRelative(-1, &v) },
 		} {

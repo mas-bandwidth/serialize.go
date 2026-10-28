@@ -58,6 +58,9 @@ func (s *MeasureStream) SerializeBits(value *uint32, bits int) error {
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
 	}
+	if *value > ^uint32(0)>>(32-bits) {
+		return s.fail(ErrValueOutOfRange) // U8, as the writer
+	}
 	return s.measure(int64(bits))
 }
 
@@ -65,6 +68,9 @@ func (s *MeasureStream) SerializeBits(value *uint32, bits int) error {
 func (s *MeasureStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
+	}
+	if *value > ^uint64(0)>>(64-bits) {
+		return s.fail(ErrValueOutOfRange) // U8, as the writer
 	}
 	return s.measure(int64(bits))
 }
@@ -122,6 +128,7 @@ func (s *MeasureStream) SerializeUint128(value *Uint128) error { return s.measur
 // returned.
 func (s *MeasureStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
+	checkFixedPointParams(numBits)
 	if s.err != nil {
 		return s.err
 	}
@@ -136,6 +143,7 @@ func (s *MeasureStream) SerializeFixed64(value *int64, integerBits, fractionBits
 // returned. integerBits plus fractionBits must equal 128.
 func (s *MeasureStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
+	checkFixedPointParams(numBits)
 	if s.err != nil {
 		return s.err
 	}
@@ -187,6 +195,9 @@ func (s *MeasureStream) SerializeCompressedFloat32(value *float32, min, max, res
 	// constants come straight out of CompressedFloatParams and are correct by
 	// construction
 	_, bits, _ := CompressedFloatParams(min, max, resolution)
+	// the writer's declaration check, so a measure panics exactly where the write
+	// would (IMPLEMENTING.md, "The check model", U9)
+	checkCompressedFloatDeclarationFinite(min, max, resolution)
 	return s.measure(int64(bits))
 }
 
@@ -195,6 +206,9 @@ func (s *MeasureStream) SerializeCompressedFloat32(value *float32, min, max, res
 // not what CompressedFloatParams derives are API misuse and panic.
 func (s *MeasureStream) SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
 	validateCompressedFloatConstants(maxIntegerValue, bits, delta)
+	if !float32BitsAreFinite(math.Float32bits(min + delta)) {
+		panic(panicCompressedFloatDecode) // the writer's top decode check (U9)
+	}
 	return s.measure(int64(bits))
 }
 
@@ -216,6 +230,9 @@ func (s *MeasureStream) SerializeString(value *string, bufferSize int) error {
 	}
 	if len(*value) >= bufferSize {
 		return s.fail(ErrValueOutOfRange)
+	}
+	if err := checkStringText(*value); err != nil {
+		return s.fail(err)
 	}
 	length := int32(len(*value))
 	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {

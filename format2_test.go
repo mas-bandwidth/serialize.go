@@ -32,6 +32,7 @@ func TestRefusalNames(t *testing.T) {
 		{ErrInvalidUTF8, "invalid_utf8"},
 		{ErrEmbeddedNul, "embedded_nul"},
 		{ErrNonCanonical, "non_canonical"},
+		{ErrRejected, "rejected"},
 	}
 	if len(want) != len(refusalNames)-1 {
 		t.Fatalf("the closed list holds %d reasons, this test names %d", len(refusalNames)-1, len(want))
@@ -49,8 +50,8 @@ func TestRefusalNames(t *testing.T) {
 			t.Errorf("errors.As does not recover %s from the error value", w.name)
 		}
 	}
-	if got := Refusal(0).String(); got != "" {
-		t.Errorf("the zero Refusal names %q, want no reason", got)
+	if got := Refusal(0).String(); got != "none" { // U14: no refusal is "none"
+		t.Errorf("the zero Refusal names %q, want none", got)
 	}
 	if got := Refusal(200).String(); got != "" {
 		t.Errorf("a Refusal outside the list names %q, want no reason", got)

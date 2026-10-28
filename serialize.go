@@ -50,7 +50,10 @@
 // error on serialized loop counts.
 package serialize
 
-import "math/bits"
+import (
+	"errors"
+	"math/bits"
+)
 
 // Refusal names the rule that refused a read, from the closed list in STANDARD.md,
 // "Refusal reasons". It is the error every stream latches: a stream's Err is a Refusal
@@ -97,10 +100,17 @@ const (
 	// ErrNonCanonical is an encoding a conforming writer never produces for the value
 	// it carries: the int_relative absolute tier carrying a bounded difference.
 	ErrNonCanonical
+
+	// ErrRejected is the caller's own refusal of a value whose bytes were well formed
+	// (STANDARD.md 2.1): ReadStream.Reject, the package level Reject, or a nested
+	// object whose Serialize method returns an error when nothing inside it refused.
+	// No wire rule produces it.
+	ErrRejected
 )
 
 // refusalNames are the reasons as STANDARD.md spells them, indexed by Refusal.
 var refusalNames = [...]string{
+	0:                  "none",
 	ErrPastEnd:         "past_end",
 	ErrValueOutOfRange: "value_out_of_range",
 	ErrNonzeroPadding:  "nonzero_padding",
@@ -109,10 +119,12 @@ var refusalNames = [...]string{
 	ErrInvalidUTF8:     "invalid_utf8",
 	ErrEmbeddedNul:     "embedded_nul",
 	ErrNonCanonical:    "non_canonical",
+	ErrRejected:        "rejected",
 }
 
 // String returns the reason exactly as STANDARD.md spells it, for example
-// "non_finite_float". A value outside the closed list returns "".
+// "non_finite_float". The zero value, no refusal, returns "none", the family spelling
+// (IMPLEMENTING.md U14). A value outside the closed list returns "".
 func (r Refusal) String() string {
 	if int(r) >= len(refusalNames) {
 		return ""
@@ -123,6 +135,91 @@ func (r Refusal) String() string {
 // Error implements error: "serialize: " and the reason.
 func (r Refusal) Error() string {
 	return "serialize: " + r.String()
+}
+
+// rejectedError is the latch a read stream records when a nested object's Serialize
+// method refuses with an error of its own: it is ErrRejected to errors.Is and errors.As,
+// and it unwraps to the caller's error, so neither the reason nor the caller's error is
+// lost. It is built only on that refusal path.
+type rejectedError struct {
+	cause error
+}
+
+func (e *rejectedError) Error() string { return "serialize: rejected: " + e.cause.Error() }
+
+func (e *rejectedError) Unwrap() error { return e.cause }
+
+func (e *rejectedError) Is(target error) bool { return target == ErrRejected }
+
+func (e *rejectedError) As(target any) bool {
+	if refusal, ok := target.(*Refusal); ok {
+		*refusal = ErrRejected
+		return true
+	}
+	return false
+}
+
+// rejection is what a read stream latches for an error a nested object's Serialize method
+// returned with nothing latched: an error that is a Refusal from the closed list is the
+// caller refusing with that reason and latches as it, a Refusal outside the list is the
+// caller refusing without saying why, and any other error is the caller's own refusal,
+// rejected, with the error kept.
+func rejection(err error) error {
+	var refusal Refusal
+	if errors.As(err, &refusal) {
+		if refusal >= ErrPastEnd && refusal <= ErrRejected {
+			return refusal
+		}
+		return ErrRejected
+	}
+	return &rejectedError{cause: err}
+}
+
+// RefusalName returns the family name of a stream's error (IMPLEMENTING.md U14): "none"
+// for nil, a stream that has not refused, and the STANDARD.md spelling for a Refusal,
+// including the rejected wrapper a read object latches. It returns "" for any other
+// error, which only a writer or a measure latches, from a caller's own Serialize.
+func RefusalName(err error) string {
+	if err == nil {
+		return refusalNames[0]
+	}
+	var refusal Refusal
+	if errors.As(err, &refusal) {
+		return refusal.String()
+	}
+	return ""
+}
+
+// closedRefusal maps a reason outside the closed list, none included, to ErrRejected:
+// the caller refusing without saying why (IMPLEMENTING.md U14).
+func closedRefusal(reason Refusal) Refusal {
+	if reason < ErrPastEnd || reason > ErrRejected {
+		return ErrRejected
+	}
+	return reason
+}
+
+// Fail refuses a read with a reason of the caller's choosing, from a serialize function
+// written once for every stream (IMPLEMENTING.md U14): on a ReadStream it is
+// ReadStream.Fail. On a WriteStream or MeasureStream there is nothing to refuse, so it
+// latches nothing, never panics (U9), and returns the reason, ErrRejected for one
+// outside the closed list, which a serialize function returns as its own error.
+func Fail(stream Stream, reason Refusal) error {
+	if reader, ok := stream.(*ReadStream); ok {
+		return reader.Fail(reason)
+	}
+	return closedRefusal(reason)
+}
+
+// Reject refuses a read as the caller's own decision, from a serialize function written
+// once for every stream: on a ReadStream it is ReadStream.Reject, latching ErrRejected.
+// On a WriteStream or MeasureStream there is nothing to refuse, so it latches nothing and
+// returns ErrRejected, which a serialize function returns as its own error.
+func Reject(stream Stream) error {
+	if reader, ok := stream.(*ReadStream); ok {
+		return reader.Reject()
+	}
+	return ErrRejected
 }
 
 // Panic messages for API misuse. These indicate programmer error, never bad packet data,

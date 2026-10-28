@@ -207,7 +207,7 @@ func parseConformanceFile(t *testing.T, path string) []conformanceVector {
 // isRefusalName reports whether a vector's stated reason is one of the closed list,
 // spelled exactly as STANDARD.md spells it.
 func isRefusalName(name string) bool {
-	for r := ErrPastEnd; r <= ErrNonCanonical; r++ {
+	for r := ErrPastEnd; r <= ErrRejected; r++ {
 		if r.String() == name {
 			return true
 		}
@@ -281,6 +281,7 @@ const (
 	stepFixed
 	stepEnd
 	stepObject // opens a nested object over the steps that follow
+	stepReject // the caller refuses here: Reject at the top level, a failing Serialize in an object
 )
 
 type step struct {
@@ -392,6 +393,12 @@ func (s *step) run(stream Stream) error {
 	case stepEnd:
 		return stream.SerializeEnd()
 
+	case stepReject:
+		// STANDARD.md, "The vector format": a reject at the top level refuses through the
+		// implementation's reject entry point. Inside a nested object runSteps turns it
+		// into the object's Serialize returning an error before it reaches here.
+		return Reject(stream)
+
 	case stepFixed:
 		if s.integerBits+s.fractionBits <= 64 {
 			value := int64(s.pattern.Lo)
@@ -426,13 +433,26 @@ type nestedObject struct {
 }
 
 func (o *nestedObject) Serialize(stream Stream) error {
+	o.run.depth++
 	_, err := o.run.runSteps(stream, o.steps)
+	o.run.depth--
 	return err
 }
 
-// runState carries the step a run stopped on, which is what the destination check needs.
+// errCallbackRefuses is what a nested object's Serialize returns at a `reject` step: the
+// caller's own error, which names no reason, so the object must latch it as rejected.
+var errCallbackRefuses = errors.New("conformance: the object's serialize function refuses")
+
+// callbackRefusesObject is an object whose Serialize refuses on its own and reads nothing.
+type callbackRefusesObject struct{}
+
+func (callbackRefusesObject) Serialize(Stream) error { return errCallbackRefuses }
+
+// runState carries the step a run stopped on, which is what the destination check needs,
+// and how many nested objects the run is inside, which decides what a `reject` step is.
 type runState struct {
 	failed *step
+	depth  int
 }
 
 // runSteps runs a step list against a stream, returning the index of the top level step the
@@ -445,6 +465,12 @@ func (r *runState) runSteps(stream Stream, steps []step) (int, error) {
 				return i, err
 			}
 			continue
+		}
+		if steps[i].kind == stepReject && r.depth > 0 {
+			// the object's serialize function refuses on its own: it returns an error
+			// and touches nothing
+			r.failed = &steps[i]
+			return i, errCallbackRefuses
 		}
 		if err := steps[i].run(stream); err != nil {
 			r.failed = &steps[i]
@@ -478,6 +504,8 @@ func stepFromWords(text string) (step, error) {
 		s.kind = stepAlign
 	case words[0] == "end" && len(words) == 1:
 		s.kind = stepEnd
+	case words[0] == "reject" && len(words) == 1:
+		s.kind = stepReject
 	case words[0] == "float" && len(words) == 1:
 		s.kind = stepFloat
 	case words[0] == "double" && len(words) == 1:
@@ -842,6 +870,33 @@ func checkTerminal(t *testing.T, vector conformanceVector, stream *ReadStream) {
 	}
 }
 
+// checkCallbackRefuses drives an object whose Serialize refuses on its own over a fresh
+// stream of the vector's bytes: the object must latch rejected, the stream must refuse
+// every later read, an object included, and the echoes must keep rejected.
+func checkCallbackRefuses(t *testing.T, vector conformanceVector, slack int) {
+	t.Helper()
+	stream := newConformanceReadStream(vector.bytes, slack)
+	if stream.SerializeObject(callbackRefusesObject{}) == nil {
+		t.Fatalf("%s: SerializeObject accepted a Serialize that returned an error", vector.where())
+	}
+	if !errors.Is(stream.Err(), ErrRejected) {
+		t.Fatalf("%s: SerializeObject latched %v for a Serialize that refused on its own, want rejected",
+			vector.where(), stream.Err())
+	}
+	probe := int32(12345)
+	if stream.SerializeInt(&probe, 7, 7) == nil || probe != 12345 {
+		t.Fatalf("%s: a zero bit read succeeded after the object refused", vector.where())
+	}
+	called := &nestedObject{run: &runState{}}
+	if stream.SerializeObject(called) == nil {
+		t.Fatalf("%s: an object read succeeded after the object refused", vector.where())
+	}
+	checkTerminal(t, vector, stream)
+	if !errors.Is(stream.Err(), ErrRejected) {
+		t.Fatalf("%s: the echoes after the object refused overwrote rejected with %v", vector.where(), stream.Err())
+	}
+}
+
 // checkReason requires the stream's first refusal to carry the reason the vector states.
 func checkReason(t *testing.T, vector conformanceVector, stream *ReadStream) {
 	t.Helper()
@@ -936,6 +991,14 @@ func runReader(t *testing.T, vector conformanceVector, steps []step, slack int) 
 
 		// the later refusals were echoes: the stream still reports the first reason
 		checkReason(t, vector, stream)
+
+		// STANDARD.md, "Refusal reasons": a nested object whose serialize function fails
+		// with nothing refused inside it latches rejected. Every refused object vector
+		// also drives such an object over a fresh stream of its bytes, as the C++ runner
+		// does, and requires rejected, terminal, and kept through the echoes.
+		if filepath.Base(vector.file) == "object.txt" {
+			checkCallbackRefuses(t, vector, slack)
+		}
 		return
 	}
 
