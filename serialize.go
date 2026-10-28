@@ -110,6 +110,7 @@ const (
 
 // refusalNames are the reasons as STANDARD.md spells them, indexed by Refusal.
 var refusalNames = [...]string{
+	0:                  "none",
 	ErrPastEnd:         "past_end",
 	ErrValueOutOfRange: "value_out_of_range",
 	ErrNonzeroPadding:  "nonzero_padding",
@@ -122,7 +123,8 @@ var refusalNames = [...]string{
 }
 
 // String returns the reason exactly as STANDARD.md spells it, for example
-// "non_finite_float". A value outside the closed list returns "".
+// "non_finite_float". The zero value, no refusal, returns "none", the family spelling
+// (IMPLEMENTING.md U14). A value outside the closed list returns "".
 func (r Refusal) String() string {
 	if int(r) >= len(refusalNames) {
 		return ""
@@ -171,6 +173,42 @@ func rejection(err error) error {
 		return ErrRejected
 	}
 	return &rejectedError{cause: err}
+}
+
+// RefusalName returns the family name of a stream's error (IMPLEMENTING.md U14): "none"
+// for nil, a stream that has not refused, and the STANDARD.md spelling for a Refusal,
+// including the rejected wrapper a read object latches. It returns "" for any other
+// error, which only a writer or a measure latches, from a caller's own Serialize.
+func RefusalName(err error) string {
+	if err == nil {
+		return refusalNames[0]
+	}
+	var refusal Refusal
+	if errors.As(err, &refusal) {
+		return refusal.String()
+	}
+	return ""
+}
+
+// closedRefusal maps a reason outside the closed list, none included, to ErrRejected:
+// the caller refusing without saying why (IMPLEMENTING.md U14).
+func closedRefusal(reason Refusal) Refusal {
+	if reason < ErrPastEnd || reason > ErrRejected {
+		return ErrRejected
+	}
+	return reason
+}
+
+// Fail refuses a read with a reason of the caller's choosing, from a serialize function
+// written once for every stream (IMPLEMENTING.md U14): on a ReadStream it is
+// ReadStream.Fail. On a WriteStream or MeasureStream there is nothing to refuse, so it
+// latches nothing, never panics (U9), and returns the reason, ErrRejected for one
+// outside the closed list, which a serialize function returns as its own error.
+func Fail(stream Stream, reason Refusal) error {
+	if reader, ok := stream.(*ReadStream); ok {
+		return reader.Fail(reason)
+	}
+	return closedRefusal(reason)
 }
 
 // Reject refuses a read as the caller's own decision, from a serialize function written

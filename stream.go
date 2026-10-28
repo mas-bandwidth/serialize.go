@@ -1,6 +1,10 @@
 package serialize
 
-import "math"
+import (
+	"math"
+	"strings"
+	"unicode/utf8"
+)
 
 // Stream is the unified serialization interface implemented by WriteStream, ReadStream
 // and MeasureStream. It is the Go equivalent of the templated stream parameter in the
@@ -101,8 +105,11 @@ type Stream interface {
 
 	// SerializeCompressedFloat32 serializes a floating point value in [min,max] with the
 	// given resolution, writing only the bits required for the quantized range. On write
-	// the value is clamped into [min,max]; on read it is guaranteed to be in [min,max]
-	// if the call succeeds.
+	// the value is clamped into [min,max]. On read a successful decode is finite and lies
+	// in [min, min + delta], where delta is max - min rounded in float32 (see
+	// CompressedFloatParams): delta can round up, so the top integer can decode a little
+	// above max, and a reader keeps those exact bits, never clamping them
+	// (STANDARD.md compressed_float; TestCompressedFloatDecodeIsMinPlusDelta).
 	SerializeCompressedFloat32(value *float32, min, max, resolution float32) error
 
 	// SerializeCompressedFloat32Precomputed is deliberately NOT part of this
@@ -309,10 +316,36 @@ func float64BitsAreFinite(bits uint64) bool {
 // panics on a top decode that is not finite; the read stream refuses any decode that
 // is not finite with ErrNonFiniteFloat.
 func CompressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32, bits int, delta float32) {
-	if !(min < max) || !(resolution > 0) {
+	if !compressedFloatDeclarationValid(min, max, resolution) {
 		panic(panicFloatParams)
 	}
+	return compressedFloatParams(min, max, resolution)
+}
 
+// compressedFloatDeclarationValid reports whether a (min,max,resolution) declaration
+// can be derived at all: min < max and resolution > 0, NaN failing both. The write and
+// measure streams panic on a declaration that is not (API misuse); the read stream
+// refuses it as ErrValueOutOfRange (IMPLEMENTING.md U7, U16).
+func compressedFloatDeclarationValid(min, max, resolution float32) bool {
+	return min < max && resolution > 0
+}
+
+// checkCompressedFloatDeclarationFinite panics unless a declaration's delta,
+// delta / resolution and top decode min + delta are finite in float32: the writer's
+// check model (IMPLEMENTING.md, "The check model"), applied on write and measure only.
+// A reader with such a declaration refuses its non-finite decode at runtime.
+func checkCompressedFloatDeclarationFinite(min, max, resolution float32) {
+	delta := max - min
+	if !float32BitsAreFinite(math.Float32bits(delta)) ||
+		!float32BitsAreFinite(math.Float32bits(delta/resolution)) ||
+		!float32BitsAreFinite(math.Float32bits(min+delta)) {
+		panic(panicCompressedFloatDecode)
+	}
+}
+
+// compressedFloatParams is CompressedFloatParams for a declaration already known to be
+// valid: the derivation itself, with no check.
+func compressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32, bits int, delta float32) {
 	delta = max - min
 
 	values := delta / resolution
@@ -336,11 +369,20 @@ func CompressedFloatParams(min, max, resolution float32) (maxIntegerValue uint32
 // every other conforming implementation of the declaration expects — so it panics
 // like the debug asserts in the C++ library, per the writer-trusted model. The
 // delta-delta term catches a non-finite delta (Inf - Inf is NaN); !(delta > 0)
-// catches NaN, zero and negative deltas.
+// catches NaN, zero and negative deltas. maxIntegerValue must lie in [1,4294967040],
+// the range CompressedFloatParams clamps to (IMPLEMENTING.md U16): a value above the
+// clamp is underivable from any declaration.
 func validateCompressedFloatConstants(maxIntegerValue uint32, bits int, delta float32) {
-	if maxIntegerValue == 0 || bits != BitsRequired(0, maxIntegerValue) || !(delta > 0) || delta-delta != 0 {
+	if !compressedFloatConstantsValid(maxIntegerValue, bits, delta) {
 		panic(panicPrecomputedFloat)
 	}
+}
+
+// compressedFloatConstantsValid is the predicate validateCompressedFloatConstants
+// panics on; the read stream refuses on it instead (IMPLEMENTING.md U7, U16).
+func compressedFloatConstantsValid(maxIntegerValue uint32, bits int, delta float32) bool {
+	return maxIntegerValue != 0 && maxIntegerValue <= 4294967040 &&
+		bits == BitsRequired(0, maxIntegerValue) && delta > 0 && delta-delta == 0
 }
 
 // validateBufferSize panics if a string buffer size cannot express a valid length
@@ -348,11 +390,17 @@ func validateCompressedFloatConstants(maxIntegerValue uint32, bits int, delta fl
 // the empty string travels, at zero length bits — exactly as the C++ library treats
 // buffer_size 1 (the old floor of 2 was this port's invention, removed per the
 // 2026-08-16 check-model audit, issue #35). The upper bound is the language boundary:
-// the wire's length field is a 32 bit int, and Go's int is wider.
+// the wire's length field is a 32 bit int, and Go's int is wider. The read stream
+// refuses on bufferSizeValid instead (IMPLEMENTING.md U7).
 func validateBufferSize(bufferSize int) {
-	if bufferSize < 1 || int64(bufferSize) > math.MaxInt32 {
+	if !bufferSizeValid(bufferSize) {
 		panic(panicBufferSize)
 	}
+}
+
+// bufferSizeValid is the predicate validateBufferSize panics on.
+func bufferSizeValid(bufferSize int) bool {
+	return bufferSize >= 1 && int64(bufferSize) <= math.MaxInt32
 }
 
 // fixedPointCapacity returns the whole unit bounds a Q format with the given number
@@ -378,6 +426,28 @@ func fixedPointCapacity(integerBits int, signed bool) (minRepresentable, maxRepr
 	return 0, int64(uint64(1)<<integerBits - 1)
 }
 
+// fixedMisuseParams and fixedMisuseBounds are the negative bit counts the fixed point
+// parameter functions return for a declaration that is API misuse: a Q format that does
+// not fit its storage or an inverted range, and whole unit bounds outside the Q format
+// (IMPLEMENTING.md U16). The write and measure streams panic on them through
+// checkFixedPointParams; the read stream refuses any negative count as
+// ErrValueOutOfRange (U7).
+const (
+	fixedMisuseParams = -1
+	fixedMisuseBounds = -2
+)
+
+// checkFixedPointParams panics on a misuse bit count from the fixed point parameter
+// functions: the write and measure streams' mechanism for a bad declaration.
+func checkFixedPointParams(numBits int) {
+	switch numBits {
+	case fixedMisuseParams:
+		panic(panicFixedParams)
+	case fixedMisuseBounds:
+		panic(panicFixedBounds)
+	}
+}
+
 // fixedPointParams64 validates a fixed point configuration with storage of 64 bits
 // or fewer and computes the wire parameters shared by the write, read and measure
 // implementations of SerializeFixed64: the raw (scaled) bounds are exact integers —
@@ -386,11 +456,11 @@ func fixedPointCapacity(integerBits int, signed bool) (minRepresentable, maxRepr
 // raw range, exactly as for a ranged integer over the raw bounds.
 func fixedPointParams64(integerBits, fractionBits int, min, max int64) (rawMin, rawRange uint64, numBits int) {
 	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits > 64 || min > max {
-		panic(panicFixedParams)
+		return 0, 0, fixedMisuseParams
 	}
 	minRepresentable, maxRepresentable := fixedPointCapacity(integerBits, min < 0)
 	if min < minRepresentable || max > maxRepresentable {
-		panic(panicFixedBounds)
+		return 0, 0, fixedMisuseBounds
 	}
 	rawMin = uint64(min) << fractionBits
 	rawMax := uint64(max) << fractionBits
@@ -410,11 +480,11 @@ func fixedPointParams64(integerBits, fractionBits int, min, max int64) (rawMin, 
 // serialize#54 pins on this port.
 func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin, rawRange Uint128, numBits int) {
 	if integerBits < 1 || fractionBits < 0 || integerBits+fractionBits != 128 || min > max {
-		panic(panicFixedParams)
+		return Uint128{}, Uint128{}, fixedMisuseParams
 	}
 	minRepresentable, maxRepresentable := fixedPointCapacity(integerBits, min < 0)
 	if min < minRepresentable || max > maxRepresentable {
-		panic(panicFixedBounds)
+		return Uint128{}, Uint128{}, fixedMisuseBounds
 	}
 	rawMin = Int128From64(min).Uint128().Lsh(uint(fractionBits))
 	rawMax := Int128From64(max).Uint128().Lsh(uint(fractionBits))
@@ -425,4 +495,20 @@ func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin,
 		numBits = BitsRequired64(uint64(min), uint64(max)) + fractionBits
 	}
 	return rawMin, rawRange, numBits
+}
+
+// checkStringText is the writer's and the measure's string text check (IMPLEMENTING.md
+// U3 and U4): a NUL among the bytes is ErrEmbeddedNul and text that is not well-formed
+// UTF-8 is ErrInvalidUTF8, the reasons a reader gives the same payload, NUL first as on
+// read. A Go string may hold any bytes, so the check is the only thing standing between
+// a caller's malformed text and a payload every conforming reader refuses: text is sent
+// byte for byte or not at all, never replaced.
+func checkStringText(text string) error {
+	if strings.IndexByte(text, 0) >= 0 {
+		return ErrEmbeddedNul
+	}
+	if !utf8.ValidString(text) {
+		return ErrInvalidUTF8
+	}
+	return nil
 }

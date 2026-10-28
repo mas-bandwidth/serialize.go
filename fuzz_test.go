@@ -101,7 +101,7 @@ func FuzzReadStream(f *testing.F) {
 		// every refusal names its rule from the closed list
 		if err := stream.Err(); err != nil {
 			var refusal Refusal
-			if !errors.As(err, &refusal) || refusal.String() == "" {
+			if !errors.As(err, &refusal) || refusal < ErrPastEnd || refusal > ErrRejected {
 				t.Fatalf("the stream refused with %v, which names no reason", err)
 			}
 		}
@@ -120,6 +120,10 @@ func FuzzRoundTrip(f *testing.F) {
 
 		abits := int(aBits)%32 + 1
 		bbits := int(bBits)%64 + 1
+		// a value wider than its field is write misuse since 2.1 (IMPLEMENTING.md U8),
+		// so the harness writes the fuzzed values masked to their widths
+		aField := a & uint32(uint64(1)<<abits-1)
+		bField := b & (uint64(1)<<bbits - 1)
 
 		min, max := c, d
 		if min > max {
@@ -185,9 +189,53 @@ func FuzzRoundTrip(f *testing.F) {
 		expectedInt128 := int128Bound.Neg().Add(
 			Uint128{Lo: b ^ 0xA0761D6478BD642F, Hi: uint64(a)}.Mod(int128Bound.Uint128().Lsh(1).Add(Uint128From64(1))).Int128())
 
+		// the operations the first harness missed (audit ledger, go L5), derived from the
+		// same arguments: int64 over a fuzzed range, the fixed width unsigned integers,
+		// degenerate ranges at 32 and 64 bits, int_relative across every tier, and a
+		// compressed float over a fixed declaration
+		min64, max64 := int64(b), int64(b)^int64(a64(a))
+		if min64 > max64 {
+			min64, max64 = max64, min64
+		}
+		value64 := min64 + int64((uint64(c)*0x9E3779B97F4A7C15)%(uint64(max64-min64)+1))
+		if uint64(max64-min64) == math.MaxUint64 {
+			value64 = int64(b ^ uint64(d))
+		}
+		u8, u16, u32, u64 := uint8(a), uint16(b), uint32(d), b^0xC2B2AE3D27D4EB4F
+		previous := c & math.MaxInt32
+		if previous == math.MaxInt32 {
+			previous--
+		}
+		current := previous + 1 + int32(uint32(d)%uint32(math.MaxInt32-previous))
+		cfValue := f32
+		if !float32BitsAreFinite(math.Float32bits(cfValue)) {
+			cfValue = 0
+		}
+		const cfMin, cfMax, cfRes = float32(-1000), float32(1000), float32(0.01)
+
+		measureStream := NewMeasureStream()
 		writeStream := NewWriteStream(buffer)
-		writeStream.SerializeBits(&a, abits)
-		writeStream.SerializeBits64(&b, bbits)
+		for _, stream := range []Stream{measureStream, writeStream} {
+			v64, w8, w16, w32, w64, cur, cf := value64, u8, u16, u32, u64, current, cfValue
+			stream.SerializeInt64(&v64, min64, max64)
+			stream.SerializeUint8(&w8)
+			stream.SerializeUint16(&w16)
+			stream.SerializeUint32(&w32)
+			stream.SerializeUint64(&w64)
+			degenerate, degenerate64 := c, value64
+			stream.SerializeInt(&degenerate, c, c)
+			stream.SerializeInt64(&degenerate64, value64, value64)
+			stream.SerializeIntRelative(previous, &cur)
+			stream.SerializeCompressedFloat32(&cf, cfMin, cfMax, cfRes)
+		}
+		if err := measureStream.Err(); err != nil {
+			t.Fatalf("measure failed: %v", err)
+		}
+		if measureStream.BitsProcessed() != writeStream.BitsProcessed() {
+			t.Fatalf("measure %d bits, write %d bits for the same unaligned fields", measureStream.BitsProcessed(), writeStream.BitsProcessed())
+		}
+		writeStream.SerializeBits(&aField, abits)
+		writeStream.SerializeBits64(&bField, bbits)
 		writeStream.SerializeInt(&c, min, max)
 		writeStream.SerializeBool(&flag)
 		writeStream.SerializeFloat32(&f32)
@@ -208,6 +256,24 @@ func FuzzRoundTrip(f *testing.F) {
 		writeStream.Flush()
 
 		readStream := NewReadStream(writeStream.Data())
+		var r64 int64
+		var r8 uint8
+		var r16 uint16
+		var r32 uint32
+		var ru64 uint64
+		var rDegenerate int32
+		var rDegenerate64 int64
+		var rCurrent int32
+		var rcf float32
+		readStream.SerializeInt64(&r64, min64, max64)
+		readStream.SerializeUint8(&r8)
+		readStream.SerializeUint16(&r16)
+		readStream.SerializeUint32(&r32)
+		readStream.SerializeUint64(&ru64)
+		readStream.SerializeInt(&rDegenerate, c, c)
+		readStream.SerializeInt64(&rDegenerate64, value64, value64)
+		readStream.SerializeIntRelative(previous, &rCurrent)
+		readStream.SerializeCompressedFloat32(&rcf, cfMin, cfMax, cfRes)
 		var ra uint32
 		var rb uint64
 		var rc int32
@@ -238,6 +304,24 @@ func FuzzRoundTrip(f *testing.F) {
 			t.Fatalf("read failed: %v", err)
 		}
 
+		if r64 != value64 || r8 != u8 || r16 != u16 || r32 != u32 || ru64 != u64 {
+			t.Fatalf("int64/uintN mismatch: wrote %d %d %d %d %d, read %d %d %d %d %d", value64, u8, u16, u32, u64, r64, r8, r16, r32, ru64)
+		}
+		if rDegenerate != c || rDegenerate64 != value64 {
+			t.Fatalf("degenerate mismatch: wrote %d %d, read %d %d", c, value64, rDegenerate, rDegenerate64)
+		}
+		if rCurrent != current {
+			t.Fatalf("int_relative mismatch: previous %d, wrote %d, read %d", previous, current, rCurrent)
+		}
+		clamped := cfValue
+		if clamped < cfMin {
+			clamped = cfMin
+		} else if clamped > cfMax {
+			clamped = cfMax
+		}
+		if math.Abs(float64(rcf-clamped)) > float64(cfRes) {
+			t.Fatalf("compressed float mismatch: wrote %v (clamped %v), read %v", cfValue, clamped, rcf)
+		}
 		if ra != a&uint32(uint64(1)<<abits-1) {
 			t.Fatalf("bits mismatch: wrote %#x (%d bits), read %#x", a, abits, ra)
 		}

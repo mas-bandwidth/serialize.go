@@ -295,10 +295,8 @@ func TestCompressedFloatPrecomputedPanics(t *testing.T) {
 		s := NewWriteStream(make([]byte, 8))
 		_ = s.SerializeCompressedFloat32Precomputed(&value, 1000, 11, 10.0, 0)
 	})
-	expectPanic("read inconsistent bits", func() {
-		s := NewReadStream(make([]byte, 8))
-		_ = s.SerializeCompressedFloat32Precomputed(&value, 1000, 11, 10.0, 0)
-	})
+	// the read stream refuses the same constants as value_out_of_range rather than
+	// panicking (IMPLEMENTING.md U7, U16): TestU7ReadDeclarationMisuseRefuses
 	expectPanic("measure inconsistent bits", func() {
 		s := NewMeasureStream()
 		_ = s.SerializeCompressedFloat32Precomputed(&value, 1000, 11, 10.0, 0)

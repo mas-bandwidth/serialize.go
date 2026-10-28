@@ -149,7 +149,13 @@ func (s *WriteStream) SerializeBits(value *uint32, bits int) error {
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
 	}
-	return s.writeBits(*value&(^uint32(0)>>(32-bits)), bits)
+	// a value wider than its field is write misuse (IMPLEMENTING.md U8), refused before
+	// anything is written; masking it would send bytes that differ from the caller's value
+	v := *value
+	if v > ^uint32(0)>>(32-bits) {
+		return s.fail(ErrValueOutOfRange)
+	}
+	return s.writeBits(v, bits)
 }
 
 // SerializeBits64 writes the low order bits of *value. bits must be in [1,64].
@@ -158,7 +164,11 @@ func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
 	}
-	if !s.tryWriteBits64(*value&(^uint64(0)>>(64-bits)), bits) {
+	v := *value
+	if v > ^uint64(0)>>(64-bits) {
+		return s.fail(ErrValueOutOfRange) // U8, as SerializeBits
+	}
+	if !s.tryWriteBits64(v, bits) {
 		return s.fail(ErrPastEnd)
 	}
 	return nil
@@ -259,6 +269,7 @@ func (s *WriteStream) SerializeUint128(value *Uint128) error {
 // format is byte identical to SerializeInt64 of the raw value over the raw bounds.
 func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
+	checkFixedPointParams(numBits)
 	// subtract in the unsigned domain: the raw range may be wider than 2^63
 	offset := uint64(*value) - rawMin
 	if offset > rawRange {
@@ -278,6 +289,7 @@ func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits i
 // integerBits plus fractionBits must equal 128.
 func (s *WriteStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
+	checkFixedPointParams(numBits)
 	if s.err != nil {
 		return s.err
 	}
@@ -355,7 +367,8 @@ func (s *WriteStream) SerializeFloat64(value *float64) error {
 // identity against a frozen copy of the original unsplit implementation.
 func (s *WriteStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
 	maxIntegerValue, bits, delta := CompressedFloatParams(min, max, resolution)
-	// no validation on this path: the constants come straight out of
+	checkCompressedFloatDeclarationFinite(min, max, resolution)
+	// no further validation on this path: the constants come straight out of
 	// CompressedFloatParams, so they are correct by construction. Only constants
 	// supplied by a caller can be wrong, and those enter through the exported
 	// precomputed entry point, which validates them there.
@@ -451,11 +464,13 @@ func writeBytesStream[T ~[]byte | ~string](s *WriteStream, data T) {
 
 // SerializeBytes aligns the stream to a byte boundary and block copies data into it.
 func (s *WriteStream) SerializeBytes(data []byte) error {
+	// room for the whole operation, align and payload, before any of it (U10)
+	alignBits := int64(-s.bitsWritten) & 7
+	if s.bitsWritten+alignBits+int64(len(data))*8 > s.numBits {
+		return s.fail(ErrPastEnd)
+	}
 	if err := s.SerializeAlign(); err != nil {
 		return err
-	}
-	if s.bitsWritten+int64(len(data))*8 > s.numBits {
-		return s.fail(ErrPastEnd)
 	}
 	writeBytesStream(s, data)
 	return nil
@@ -472,15 +487,21 @@ func (s *WriteStream) SerializeString(value *string, bufferSize int) error {
 	if len(*value) >= bufferSize {
 		return s.fail(ErrValueOutOfRange)
 	}
+	if err := checkStringText(*value); err != nil {
+		return s.fail(err)
+	}
 	length := int32(len(*value))
+	// room for the whole operation, length, align and payload, before any of it (U10)
+	end := s.bitsWritten + int64(BitsRequired(0, uint32(bufferSize-1)))
+	end += int64(-end) & 7
+	if end+int64(length)*8 > s.numBits {
+		return s.fail(ErrPastEnd)
+	}
 	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
 		return err
 	}
 	if err := s.SerializeAlign(); err != nil {
 		return err
-	}
-	if s.bitsWritten+int64(length)*8 > s.numBits {
-		return s.fail(ErrPastEnd)
 	}
 	writeBytesStream(s, *value)
 	return nil

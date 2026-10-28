@@ -21,6 +21,14 @@ Format 2.0 is a major version of this module, `github.com/mas-bandwidth/serializ
 
 Standard 2.1 (still format 2.0, so the wire is unchanged) adds the ninth reason, `rejected` (`ErrRejected`): the caller's own refusal of a value whose bytes were well formed. Call `ReadStream.Reject`, or `serialize.Reject(stream)` from a unified serialize function, to refuse a read; a nested object whose `Serialize` method returns an error with nothing refused inside it latches `ErrRejected` too, wrapping that error so `errors.Is` still finds it. It goes through the same latch as every other refusal, so it is terminal and the first reason wins. On a write or measure stream `Reject` latches nothing and returns `ErrRejected`.
 
+Standard 2.1 also makes the family's uniform rules normative (IMPLEMENTING.md U1 to U16), and this release keeps them, each proved in `uniform_test.go`:
+
+* A read stream never panics, whatever the caller declares. A bad declaration on read (a bit count outside its range, `min > max`, a fixed point bound outside its Q format, a compressed float declaration or precomputed constants that cannot be derived, a string `bufferSize` below 1, a negative `int_relative` `previous`) refuses with `ErrValueOutOfRange`, and a stream that already refused keeps its first reason. The write and measure streams still panic on the same declarations.
+* A writer never sends bytes that differ from the caller's value: `SerializeBits` and `SerializeBits64` refuse a value wider than its field with `ErrValueOutOfRange` instead of masking it, and `SerializeString` refuses text with a NUL (`ErrEmbeddedNul`) or that is not well-formed UTF-8 (`ErrInvalidUTF8`) on write and measure, the reasons a reader would give.
+* `SerializeBytes` and `SerializeString` check room for the whole operation before writing any of it, so a refused write leaves no length or align bits behind.
+* A compressed float declaration whose `delta` or `delta / resolution` is not finite panics on write and measure, and the measure stream panics on a top decode that is not finite, as the writer already did. Precomputed constants must have `maxIntegerValue` in `[1, 4294967040]`.
+* `ReadStream.Fail(reason)`, and `serialize.Fail(stream, reason)` from a unified serialize function, refuse a read with a reason of your choosing; a reason outside the closed list latches `ErrRejected`. `RefusalName(err)` gives the family name of any stream error, `"none"` for nil.
+
 It has the following features:
 
 * Serialize a bool with only one bit
@@ -32,7 +40,7 @@ It has the following features:
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
 * Zero allocations on every serialization path, except a read that constructs a string: `SerializeString` allocates the value it hands back when its content changed
-* Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking, and every error names the rule that refused the packet
+* Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking, and every error names the rule that refused the packet. A read stream never panics on a caller's bad declaration either: it refuses it with `ErrValueOutOfRange`
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
 

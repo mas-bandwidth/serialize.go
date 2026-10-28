@@ -66,7 +66,7 @@ func (s *ReadStream) readBits(value *uint32, bits int) error {
 // [0,(1<<bits)-1]; on failure it is left unmodified.
 func (s *ReadStream) SerializeBits(value *uint32, bits int) error {
 	if bits < 1 || bits > 32 {
-		panic(panicBitsRange)
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	return s.readBits(value, bits)
 }
@@ -75,7 +75,7 @@ func (s *ReadStream) SerializeBits(value *uint32, bits int) error {
 // bits are read as the low dword first, then the high remainder.
 func (s *ReadStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
-		panic(panicBitsRange64)
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	if s.err != nil {
 		return s.err
@@ -92,7 +92,7 @@ func (s *ReadStream) SerializeBits64(value *uint64, bits int) error {
 // ErrValueOutOfRange.
 func (s *ReadStream) SerializeInt(value *int32, min, max int32) error {
 	if min > max {
-		panic(panicMinMax)
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	if s.err != nil {
 		return s.err
@@ -115,7 +115,7 @@ func (s *ReadStream) SerializeInt(value *int32, min, max int32) error {
 // with ErrValueOutOfRange.
 func (s *ReadStream) SerializeInt64(value *int64, min, max int64) error {
 	if min > max {
-		panic(panicMinMax)
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	if s.err != nil {
 		return s.err
@@ -153,7 +153,7 @@ func (s *ReadStream) readGroups128(numBits int) Uint128 {
 // fail with ErrValueOutOfRange.
 func (s *ReadStream) SerializeInt128(value *Int128, min, max Int128) error {
 	if min.Cmp(max) > 0 {
-		panic(panicMinMax)
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	if s.err != nil {
 		return s.err
@@ -196,6 +196,9 @@ func (s *ReadStream) SerializeFixed64(value *int64, integerBits, fractionBits in
 	if s.err != nil {
 		return s.err
 	}
+	if numBits < 0 {
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16)
+	}
 	if s.reader.bitsRead+int64(numBits) > s.reader.numBits {
 		return s.fail(ErrPastEnd)
 	}
@@ -216,6 +219,9 @@ func (s *ReadStream) SerializeFixed128(value *Int128, integerBits, fractionBits 
 	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
 	if s.err != nil {
 		return s.err
+	}
+	if numBits < 0 {
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16)
 	}
 	if s.reader.bitsRead+int64(numBits) > s.reader.numBits {
 		return s.fail(ErrPastEnd)
@@ -334,7 +340,10 @@ func (s *ReadStream) SerializeFloat64(value *float64) error {
 // TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
 // identity against a frozen copy of the original unsplit implementation.
 func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
-	maxIntegerValue, bits, delta := CompressedFloatParams(min, max, resolution)
+	if !compressedFloatDeclarationValid(min, max, resolution) {
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
+	}
+	maxIntegerValue, bits, delta := compressedFloatParams(min, max, resolution)
 	// no validation on this path: the constants come straight out of
 	// CompressedFloatParams, so they are correct by construction. Only constants
 	// supplied by a caller can be wrong, and those enter through the exported
@@ -344,12 +353,15 @@ func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolu
 
 // SerializeCompressedFloat32Precomputed reads a quantized floating point value from
 // precomputed wire constants — see CompressedFloatParams and the Stream interface
-// documentation. Constants that are not exactly what CompressedFloatParams derives
-// are API misuse and panic. This is the untrusted-caller boundary; the arithmetic
+// documentation. Constants that fail the checks CompressedFloatParams's output always
+// passes are a bad declaration, refused as ErrValueOutOfRange (IMPLEMENTING.md U7,
+// U16), where the write and measure streams panic. This is the untrusted-caller boundary; the arithmetic
 // itself lives in compressedFloat32Precomputed, which the derive-per-call path
 // reaches too.
 func (s *ReadStream) SerializeCompressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
-	validateCompressedFloatConstants(maxIntegerValue, bits, delta)
+	if !compressedFloatConstantsValid(maxIntegerValue, bits, delta) {
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
+	}
 	return s.compressedFloat32Precomputed(value, maxIntegerValue, bits, delta, min)
 }
 
@@ -425,7 +437,9 @@ func (s *ReadStream) SerializeBytes(data []byte) error {
 // mark. Arbitrary byte payloads belong to SerializeBytes. On failure *value is left
 // unmodified.
 func (s *ReadStream) SerializeString(value *string, bufferSize int) error {
-	validateBufferSize(bufferSize)
+	if !bufferSizeValid(bufferSize) {
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
+	}
 	if s.err != nil {
 		return s.err
 	}
@@ -538,9 +552,18 @@ func (s *ReadStream) Reject() error {
 	return s.fail(ErrRejected)
 }
 
+// Fail refuses the read with the given reason through the same latch as every wire
+// refusal (IMPLEMENTING.md U14): terminal, and a stream that already refused keeps its
+// first reason. A reason outside the closed list, the zero value included, latches
+// ErrRejected, so a refused stream never reports none. It returns the latched error.
+func (s *ReadStream) Fail(reason Refusal) error {
+	return s.fail(closedRefusal(reason))
+}
+
 // SerializeIntRelative reads *current relative to previous. previous is the caller's own
 // state and never arrives off the wire, so a previous outside the int_relative domain is
-// API misuse and panics.
+// a bad declaration: refused as ErrValueOutOfRange on read (IMPLEMENTING.md U7, U16),
+// where the write and measure streams panic.
 //
 // Every tier's reconstruction is checked (STANDARD.md int_relative): the value is rebuilt
 // in int64, which cannot wrap, and the read fails with ErrValueOutOfRange unless the
@@ -557,7 +580,7 @@ func (s *ReadStream) Reject() error {
 // difference. On failure *current is left unmodified.
 func (s *ReadStream) SerializeIntRelative(previous int32, current *int32) error {
 	if previous < intRelativeMin {
-		panic(panicIntRelativeDomain)
+		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	if s.err != nil {
 		return s.err

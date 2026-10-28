@@ -29,8 +29,10 @@ INVARIANTS
   Never change an encoding without coordinating with C++. New features get ported from
   serialize.h, with its tests mirrored and BOTH halves of the compat harness extended.
 - **Malicious packet data never panics.** Reads are bounds-checked and range-validated
-  and return errors. Panics are reserved for API misuse only (bits outside [1,32]/[1,64],
-  min > max, write buffer not a multiple of 8). The fuzz targets enforce this.
+  and return errors. Panics are reserved for API misuse on the WRITE and MEASURE streams
+  (bits outside [1,32]/[1,64], min > max, write buffer not a multiple of 8). Since 2.1 a
+  READ stream never panics at all: the same bad declarations refuse with
+  ErrValueOutOfRange there (IMPLEMENTING.md U7, U16; uniform_test.go). The fuzz targets enforce this.
   **min == max is legal, not misuse**: the degenerate range costs zero bits (STANDARD.md),
   and every stream accepts it — only an inverted range panics. int_relative's `previous`
   is caller state, not wire data: outside the domain 0..2147483647 it panics too, so never
