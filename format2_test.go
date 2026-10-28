@@ -59,37 +59,37 @@ func TestRefusalNames(t *testing.T) {
 }
 
 // TestFloatWriteFinite: the format carries finite values only, so a writer handed NaN or
-// an infinity refuses it, as it refuses an int outside its range, and writes nothing;
-// the measure agrees. Negative zero and the subnormals are finite and travel bit exact.
+// an infinity panics, as on an int outside its range, and writes nothing; the measure
+// agrees (IMPLEMENTING.md U6, U9). Negative zero and the subnormals are finite and travel bit exact.
 func TestFloatWriteFinite(t *testing.T) {
 	nonFinite32 := []uint32{0x7F800000, 0xFF800000, 0x7FC00000, 0xFFC00000, 0x7F800001, 0x7FFFFFFF, 0xFFFFFFFF}
 	for _, bits := range nonFinite32 {
 		value := math.Float32frombits(bits)
 		w := NewWriteStream(make([]byte, 16))
-		if err := w.SerializeFloat32(&value); !errors.Is(err, ErrNonFiniteFloat) {
-			t.Errorf("write float 0x%08X: got %v, want ErrNonFiniteFloat", bits, err)
+		if !panics(func() { w.SerializeFloat32(&value) }) {
+			t.Errorf("write float 0x%08X did not panic", bits)
 		}
 		if w.BitsProcessed() != 0 {
 			t.Errorf("write float 0x%08X wrote %d bits", bits, w.BitsProcessed())
 		}
 		m := NewMeasureStream()
-		if err := m.SerializeFloat32(&value); !errors.Is(err, ErrNonFiniteFloat) {
-			t.Errorf("measure float 0x%08X: got %v, want ErrNonFiniteFloat", bits, err)
+		if !panics(func() { m.SerializeFloat32(&value) }) {
+			t.Errorf("measure float 0x%08X did not panic", bits)
 		}
 	}
 	nonFinite64 := []uint64{0x7FF0000000000000, 0xFFF0000000000000, 0x7FF8000000000000, 0x7FF0000000000001, 0xFFFFFFFFFFFFFFFF}
 	for _, bits := range nonFinite64 {
 		value := math.Float64frombits(bits)
 		w := NewWriteStream(make([]byte, 16))
-		if err := w.SerializeFloat64(&value); !errors.Is(err, ErrNonFiniteFloat) {
-			t.Errorf("write double 0x%016X: got %v, want ErrNonFiniteFloat", bits, err)
+		if !panics(func() { w.SerializeFloat64(&value) }) {
+			t.Errorf("write double 0x%016X did not panic", bits)
 		}
 		if w.BitsProcessed() != 0 {
 			t.Errorf("write double 0x%016X wrote %d bits", bits, w.BitsProcessed())
 		}
 		m := NewMeasureStream()
-		if err := m.SerializeFloat64(&value); !errors.Is(err, ErrNonFiniteFloat) {
-			t.Errorf("measure double 0x%016X: got %v, want ErrNonFiniteFloat", bits, err)
+		if !panics(func() { m.SerializeFloat64(&value) }) {
+			t.Errorf("measure double 0x%016X did not panic", bits)
 		}
 	}
 
@@ -185,8 +185,8 @@ func TestCompressedFloatDecodeMustBeFinite(t *testing.T) {
 }
 
 // TestEndWriteAndMeasure: a writer's end emits nothing and a measure's costs nothing,
-// so one serialize function carries its end on every stream. On a failed stream the end
-// echoes the first failure, as every other operation does.
+// so one serialize function carries its end on every stream. A write or measure stream
+// records nothing, so its end returns nil even after misuse (U9, U12).
 func TestEndWriteAndMeasure(t *testing.T) {
 	w := NewWriteStream(make([]byte, 16))
 	v := uint32(5)
@@ -207,16 +207,16 @@ func TestEndWriteAndMeasure(t *testing.T) {
 		t.Fatalf("the measure's end measured %d bits (%v), want 0", m.BitsProcessed(), err)
 	}
 
-	failed := NewWriteStream(make([]byte, 8))
+	misused := NewWriteStream(make([]byte, 8))
 	big := int32(9)
-	failed.SerializeInt(&big, 0, 5)
-	if err := failed.SerializeEnd(); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("the end on a failed writer gave %v, want the latched ErrValueOutOfRange", err)
+	panics(func() { misused.SerializeInt(&big, 0, 5) })
+	if err := misused.SerializeEnd(); err != nil {
+		t.Fatalf("the end after writer misuse gave %v, want nil", err)
 	}
-	failedMeasure := NewMeasureStream()
-	failedMeasure.SerializeInt(&big, 0, 5)
-	if err := failedMeasure.SerializeEnd(); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("the end on a failed measure gave %v, want the latched ErrValueOutOfRange", err)
+	misusedMeasure := NewMeasureStream()
+	panics(func() { misusedMeasure.SerializeInt(&big, 0, 5) })
+	if err := misusedMeasure.SerializeEnd(); err != nil {
+		t.Fatalf("the end after measure misuse gave %v, want nil", err)
 	}
 
 	// the reader: an accepted end leaves the stream exactly consumed, and a zero bit

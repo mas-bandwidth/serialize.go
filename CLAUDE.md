@@ -12,7 +12,7 @@ on 2026-07-12 and the old module path is FROZEN**: proxy-cached versions keep wo
 new versions publish only under serialize.go. Do not "restore" the old path.
 
 THE ONE THAT WILL BITE YOU: STICKY ERRORS AND LOOP CONTROL
-The first error LATCHES on the stream; every later serialize call is a no-op that leaves
+On a READ stream the first error LATCHES; every later serialize call is a no-op that leaves
 its value unmodified. So any serialized value that controls a loop — a count, a sentinel
 bit — **must have its error checked before use**, or a truncated packet spins the loop
 forever. That is a DoS, reachable from the wire, and it looks like ordinary code.
@@ -29,8 +29,13 @@ INVARIANTS
   Never change an encoding without coordinating with C++. New features get ported from
   serialize.h, with its tests mirrored and BOTH halves of the compat harness extended.
 - **Malicious packet data never panics.** Reads are bounds-checked and range-validated
-  and return errors. Panics are reserved for API misuse on the WRITE and MEASURE streams
-  (bits outside [1,32]/[1,64], min > max, write buffer not a multiple of 8). Since 2.1 a
+  and return errors. Panics are reserved for API misuse on the WRITE and MEASURE streams.
+  **Since 2.1.1 (IMPLEMENTING.md U9) ALL write and measure misuse panics — the trap —
+  and a write/measure stream records NOTHING (Err is always nil)**: bad declarations,
+  values outside range/width, non-finite float/double/compressed_float values (no clamp
+  of NaN), string too long/ill-formed/NUL, write past the end, Reject on W/M, BitWriter
+  over-wide values. Fail on W/M returns its error and records nothing; a W/M object's
+  error is returned, not latched. trap_test.go holds it. Do not reintroduce a write latch. Since 2.1 a
   READ stream never panics at all: the same bad declarations refuse with
   ErrValueOutOfRange there (IMPLEMENTING.md U7, U16; uniform_test.go). The fuzz targets enforce this.
   **min == max is legal, not misuse**: the degenerate range costs zero bits (STANDARD.md),
@@ -87,8 +92,9 @@ published only under serialize.go.
    them from serialize.h, mirror its tests, and extend the compat harness (both
    halves).
 2. **Malicious packet data never panics.** Every stream read is bounds checked and
-   range validated and fails with an error. Panics are reserved for API misuse only
-   (bits out of [1,32]/[1,64], min > max, write buffer not a multiple of 8 bytes).
+   range validated and fails with an error. Panics are reserved for API misuse on the
+   write and measure streams, and since 2.1.1 every write/measure misuse panics and
+   nothing is latched there (IMPLEMENTING.md U9, trap_test.go).
    The fuzz targets enforce this — keep them passing. A degenerate range where
    min == max is **not** misuse: STANDARD.md defines it as costing zero bits, and
    the ranged integer streams accept it on every width, 32, 64 and 128 (see
@@ -97,8 +103,8 @@ published only under serialize.go.
    by the range, and STANDARD.md excludes it by name. SerializeIntRelative's `previous`
    is the third misuse panic: it is the caller's own state, never wire data, and lives in
    the int_relative domain 0..2147483647.
-3. **Sticky errors and the control flow rule.** The first error latches on the
-   stream; later serialize calls are no-ops that leave values unmodified. That is
+3. **Sticky errors and the control flow rule.** On a read stream the first error
+   latches; later serialize calls are no-ops that leave values unmodified. That is
    STANDARD.md's terminal-failure rule satisfied by latch, and only Reset clears it
    (terminal_test.go pins all six failure shapes). Non-mutation is per scalar read; a
    caller-owned slice passed to SerializeBytes is unspecified after a refusal. Therefore
@@ -147,6 +153,8 @@ published only under serialize.go.
   corpus-sync CI jobs; `conformance_test.go` runs the corpus
 - `terminal_test.go` — the terminal-failure latch, one case per failure shape
 - `degenerate_test.go` — the zero-bit degenerate range on every width
+- `trap_test.go` — the 2.1.1 rulings: U9 write/measure misuse traps and records nothing,
+  U6 measure parity, U15 CopyString with the reference test_copy_string vectors
 
 ## Commands
 

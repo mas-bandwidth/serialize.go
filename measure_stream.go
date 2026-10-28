@@ -10,10 +10,13 @@ import "math"
 // estimate rather than exact, because the true pad depends on where the object lands in
 // the final bit stream. The estimate is guaranteed to be conservative: every align is
 // counted as the worst case 7 bits.
+//
+// A measure refuses nothing (IMPLEMENTING.md U6): it makes every check a write makes,
+// except the room left in a buffer it does not have, and catches misuse by the same
+// trap, a panic at the call (U9). It records nothing: Err is always nil.
 type MeasureStream struct {
 	bitsWritten int64
 	context     any
-	err         error
 }
 
 // NewMeasureStream creates a measure stream. The zero value is also ready to use.
@@ -21,10 +24,9 @@ func NewMeasureStream() *MeasureStream {
 	return &MeasureStream{}
 }
 
-// Reset clears the measured bit count and any latched error. The context is kept.
+// Reset clears the measured bit count. The context is kept.
 func (s *MeasureStream) Reset() {
 	s.bitsWritten = 0
-	s.err = nil
 }
 
 // IsWriting returns true: a measure stream behaves like a write stream so that unified
@@ -34,21 +36,10 @@ func (s *MeasureStream) IsWriting() bool { return true }
 // IsReading returns false.
 func (s *MeasureStream) IsReading() bool { return false }
 
-// fail latches the first error on the stream and returns the latched error.
-func (s *MeasureStream) fail(err error) error {
-	if s.err == nil {
-		s.err = err
-	}
-	return s.err
-}
-
 // measure adds bits to the measured count. The count is int64 like the other streams,
 // so byte based measurements must multiply in the 64 bit domain: len(data)*8 overflows
 // int on 32 bit platforms for buffers of 256MB or more.
 func (s *MeasureStream) measure(bits int64) error {
-	if s.err != nil {
-		return s.err
-	}
 	s.bitsWritten += bits
 	return nil
 }
@@ -59,7 +50,7 @@ func (s *MeasureStream) SerializeBits(value *uint32, bits int) error {
 		panic(panicBitsRange)
 	}
 	if *value > ^uint32(0)>>(32-bits) {
-		return s.fail(ErrValueOutOfRange) // U8, as the writer
+		panic(panicValueTooWide) // U8, as the writer
 	}
 	return s.measure(int64(bits))
 }
@@ -70,52 +61,43 @@ func (s *MeasureStream) SerializeBits64(value *uint64, bits int) error {
 		panic(panicBitsRange64)
 	}
 	if *value > ^uint64(0)>>(64-bits) {
-		return s.fail(ErrValueOutOfRange) // U8, as the writer
+		panic(panicValueTooWide) // U8, as the writer
 	}
 	return s.measure(int64(bits))
 }
 
 // SerializeInt measures the bits required for the range [min,max]. Like a write, the
-// value must be in range or ErrValueOutOfRange is returned.
+// value must be in range or the call panics (U9).
 func (s *MeasureStream) SerializeInt(value *int32, min, max int32) error {
 	if min > max {
 		panic(panicMinMax)
 	}
-	if s.err != nil {
-		return s.err
-	}
 	if *value < min || *value > max {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	return s.measure(int64(BitsRequired(uint32(min), uint32(max))))
 }
 
 // SerializeInt64 measures the bits required for the range [min,max]. Like a write, the
-// value must be in range or ErrValueOutOfRange is returned.
+// value must be in range or the call panics (U9).
 func (s *MeasureStream) SerializeInt64(value *int64, min, max int64) error {
 	if min > max {
 		panic(panicMinMax)
 	}
-	if s.err != nil {
-		return s.err
-	}
 	if *value < min || *value > max {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	return s.measure(int64(BitsRequired64(uint64(min), uint64(max))))
 }
 
 // SerializeInt128 measures the bits required for the range [min,max]. Like a write,
-// the value must be in range or ErrValueOutOfRange is returned.
+// the value must be in range or the call panics (U9).
 func (s *MeasureStream) SerializeInt128(value *Int128, min, max Int128) error {
 	if min.Cmp(max) > 0 {
 		panic(panicMinMax)
 	}
-	if s.err != nil {
-		return s.err
-	}
 	if value.Cmp(min) < 0 || value.Cmp(max) > 0 {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	return s.measure(int64(BitsRequired128(min.Uint128(), max.Uint128())))
 }
@@ -124,31 +106,23 @@ func (s *MeasureStream) SerializeInt128(value *Int128, min, max Int128) error {
 func (s *MeasureStream) SerializeUint128(value *Uint128) error { return s.measure(128) }
 
 // SerializeFixed64 measures the bits required for the raw (scaled) range. Like a
-// write, the raw value must be within [min,max] whole units or ErrValueOutOfRange is
-// returned.
+// write, the raw value must be within [min,max] whole units or the call panics (U9).
 func (s *MeasureStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
 	checkFixedPointParams(numBits)
-	if s.err != nil {
-		return s.err
-	}
 	if uint64(*value)-rawMin > rawRange {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	return s.measure(int64(numBits))
 }
 
 // SerializeFixed128 measures the bits required for the raw (scaled) range. Like a
-// write, the raw value must be within [min,max] whole units or ErrValueOutOfRange is
-// returned. integerBits plus fractionBits must equal 128.
+// write, the raw value must be within [min,max] whole units or the call panics (U9). integerBits plus fractionBits must equal 128.
 func (s *MeasureStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
 	checkFixedPointParams(numBits)
-	if s.err != nil {
-		return s.err
-	}
 	if value.Uint128().Sub(rawMin).Cmp(rawRange) > 0 {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	return s.measure(int64(numBits))
 }
@@ -168,20 +142,20 @@ func (s *MeasureStream) SerializeUint64(value *uint64) error { return s.measure(
 // SerializeBool measures 1 bit.
 func (s *MeasureStream) SerializeBool(value *bool) error { return s.measure(1) }
 
-// SerializeFloat32 measures 32 bits. Like a write, the value must be finite or
-// ErrNonFiniteFloat is returned.
+// SerializeFloat32 measures 32 bits. Like a write, the value must be finite or the
+// call panics (U9).
 func (s *MeasureStream) SerializeFloat32(value *float32) error {
 	if !float32BitsAreFinite(math.Float32bits(*value)) {
-		return s.fail(ErrNonFiniteFloat)
+		panic(panicNonFiniteFloat)
 	}
 	return s.measure(32)
 }
 
-// SerializeFloat64 measures 64 bits. Like a write, the value must be finite or
-// ErrNonFiniteFloat is returned.
+// SerializeFloat64 measures 64 bits. Like a write, the value must be finite or the
+// call panics (U9).
 func (s *MeasureStream) SerializeFloat64(value *float64) error {
 	if !float64BitsAreFinite(math.Float64bits(*value)) {
-		return s.fail(ErrNonFiniteFloat)
+		panic(panicNonFiniteFloat)
 	}
 	return s.measure(64)
 }
@@ -198,6 +172,9 @@ func (s *MeasureStream) SerializeCompressedFloat32(value *float32, min, max, res
 	// the writer's declaration check, so a measure panics exactly where the write
 	// would (IMPLEMENTING.md, "The check model", U9)
 	checkCompressedFloatDeclarationFinite(min, max, resolution)
+	if !float32BitsAreFinite(math.Float32bits(*value)) {
+		panic(panicNonFiniteFloat) // the writer's value check (U6, U9)
+	}
 	return s.measure(int64(bits))
 }
 
@@ -209,38 +186,28 @@ func (s *MeasureStream) SerializeCompressedFloat32Precomputed(value *float32, ma
 	if !float32BitsAreFinite(math.Float32bits(min + delta)) {
 		panic(panicCompressedFloatDecode) // the writer's top decode check (U9)
 	}
+	if !float32BitsAreFinite(math.Float32bits(*value)) {
+		panic(panicNonFiniteFloat) // the writer's value check (U6, U9)
+	}
 	return s.measure(int64(bits))
 }
 
 // SerializeBytes measures a worst case align plus the data bytes.
 func (s *MeasureStream) SerializeBytes(data []byte) error {
-	if err := s.SerializeAlign(); err != nil {
-		return err
-	}
-	return s.measure(int64(len(data)) * 8)
+	return s.measure(int64(s.AlignBits()) + int64(len(data))*8)
 }
 
 // SerializeString measures the length prefix, a worst case align, and the string bytes.
-// Like a write, the string must fit in bufferSize-1 bytes or ErrValueOutOfRange is
-// returned.
+// Like a write, text longer than bufferSize-1 bytes, holding a NUL, or not well-formed
+// UTF-8 panics (U6, U9).
 func (s *MeasureStream) SerializeString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
-	if s.err != nil {
-		return s.err
-	}
 	if len(*value) >= bufferSize {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicStringTooLong)
 	}
-	if err := checkStringText(*value); err != nil {
-		return s.fail(err)
-	}
+	checkStringText(*value)
 	length := int32(len(*value))
-	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
-		return err
-	}
-	if err := s.SerializeAlign(); err != nil {
-		return err
-	}
+	s.bitsWritten += int64(BitsRequired(0, uint32(bufferSize-1)) + s.AlignBits())
 	return s.measure(int64(length) * 8)
 }
 
@@ -251,33 +218,25 @@ func (s *MeasureStream) SerializeAlign() error {
 
 // SerializeEnd measures the end of the object, which costs nothing.
 func (s *MeasureStream) SerializeEnd() error {
-	return s.err
+	return nil
 }
 
-// SerializeObject measures an object that implements Serializer.
+// SerializeObject measures an object that implements Serializer. An error the object's
+// Serialize method returns is returned as it is and recorded nowhere (U6, U9).
 func (s *MeasureStream) SerializeObject(object Serializer) error {
-	if s.err != nil {
-		return s.err
-	}
-	if err := object.Serialize(s); err != nil {
-		return s.fail(err)
-	}
-	return s.err
+	return object.Serialize(s)
 }
 
 // SerializeIntRelative measures the encoding of *current relative to previous, exactly
 // as SerializeIntRelative on a write stream would encode it, and refuses the same
-// parameters: previous outside the int_relative domain panics, previous not less than
-// *current returns ErrValueOutOfRange.
+// parameters: previous outside the int_relative domain, or not less than *current,
+// panics (U6, U9).
 func (s *MeasureStream) SerializeIntRelative(previous int32, current *int32) error {
 	if previous < intRelativeMin {
 		panic(panicIntRelativeDomain)
 	}
-	if s.err != nil {
-		return s.err
-	}
 	if previous >= *current {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicIntRelativeOrder)
 	}
 	difference := uint32(*current) - uint32(previous)
 	bits := 1
@@ -315,9 +274,10 @@ func (s *MeasureStream) BytesProcessed() int64 {
 	return (s.bitsWritten + 7) / 8
 }
 
-// Err returns the first error latched on the stream, or nil.
+// Err returns nil: a measure stream records nothing (IMPLEMENTING.md U6, U9). It
+// exists so a unified serialize function can return stream.Err() whatever the stream.
 func (s *MeasureStream) Err() error {
-	return s.err
+	return nil
 }
 
 // SetContext sets a context value that serialize functions can retrieve with Context.

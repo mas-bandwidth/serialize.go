@@ -4,6 +4,11 @@ import "math/bits"
 
 // 128 bit integers.
 //
+// These types and their arithmetic are a language necessity in the sense of
+// IMPLEMENTING.md U15 ("Exports beyond the reference operations"): the reference's 128
+// bit integer types, which Go lacks, with the constructors and the arithmetic their
+// operations need.
+//
 // Go has no native 128 bit integer type, so this file provides the two-lane pair the
 // C++ serialize library defines for compilers without __int128: Uint128 and Int128,
 // each a {Lo, Hi} pair of uint64 lanes. The semantics mirror the C++ emulated types

@@ -106,28 +106,28 @@ func TestU7ReadDeclarationMisuseLeavesValue(t *testing.T) {
 }
 
 // TestU8OverWideBitsOnWrite holds U8: a value that does not fit its bit width is write
-// misuse, caught by this port's always-on mechanism (the returned error), never masked.
+// misuse, caught by this port's always-on mechanism, the trap (U9), never masked.
 func TestU8OverWideBitsOnWrite(t *testing.T) {
 	w := NewWriteStream(make([]byte, 16))
 	v := uint32(0x1FF)
-	if err := w.SerializeBits(&v, 8); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("SerializeBits(0x1FF, 8) returned %v, want value_out_of_range", err)
+	if got, _ := trapped(func() { w.SerializeBits(&v, 8) }); got != panicValueTooWide {
+		t.Fatalf("SerializeBits(0x1FF, 8) trapped with %v", got)
 	}
 	if w.BitsProcessed() != 0 {
-		t.Fatalf("the refused write wrote %d bits", w.BitsProcessed())
+		t.Fatalf("the misused write wrote %d bits", w.BitsProcessed())
 	}
 	w64 := NewWriteStream(make([]byte, 16))
 	v64 := uint64(1) << 40
-	if err := w64.SerializeBits64(&v64, 40); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("SerializeBits64(1<<40, 40) returned %v, want value_out_of_range", err)
+	if got, _ := trapped(func() { w64.SerializeBits64(&v64, 40) }); got != panicValueTooWide {
+		t.Fatalf("SerializeBits64(1<<40, 40) trapped with %v", got)
 	}
 	m := NewMeasureStream()
-	if err := m.SerializeBits(&v, 8); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("measure SerializeBits(0x1FF, 8) returned %v, want value_out_of_range", err)
+	if got, _ := trapped(func() { m.SerializeBits(&v, 8) }); got != panicValueTooWide {
+		t.Fatalf("measure SerializeBits(0x1FF, 8) trapped with %v", got)
 	}
 	m64 := NewMeasureStream()
-	if err := m64.SerializeBits64(&v64, 40); !errors.Is(err, ErrValueOutOfRange) {
-		t.Fatalf("measure SerializeBits64(1<<40, 40) returned %v, want value_out_of_range", err)
+	if got, _ := trapped(func() { m64.SerializeBits64(&v64, 40) }); got != panicValueTooWide {
+		t.Fatalf("measure SerializeBits64(1<<40, 40) trapped with %v", got)
 	}
 	// every value that fits is still written, at every width, including the full width
 	for bits := 1; bits <= 32; bits++ {
@@ -193,44 +193,44 @@ func TestU16PrecomputedMaxIntegerValue(t *testing.T) {
 	}
 }
 
-// TestU4StringWriteChecks holds U3 and U4: the writer and the measure refuse a string
-// that is not well-formed UTF-8, or that carries a NUL, with the reason a reader would
-// give, and write nothing. Text is sent byte for byte or not at all.
+// TestU4StringWriteChecks holds U3 and U4: the writer and the measure trap on a string
+// that is not well-formed UTF-8, or that carries a NUL (U9), and write nothing. Text is
+// sent byte for byte or not at all.
 func TestU4StringWriteChecks(t *testing.T) {
 	cases := []struct {
 		text string
-		want error
+		want string
 	}{
-		{"\xff", ErrInvalidUTF8},
-		{"ok\xc0\xafok", ErrInvalidUTF8},
-		{"\xed\xa0\x80", ErrInvalidUTF8}, // a lone surrogate, encoded
-		{"a\x00b", ErrEmbeddedNul},
-		{"\x00\xff", ErrEmbeddedNul}, // the NUL scan comes first, as on read
+		{"\xff", panicInvalidUTF8},
+		{"ok\xc0\xafok", panicInvalidUTF8},
+		{"\xed\xa0\x80", panicInvalidUTF8}, // a lone surrogate, encoded
+		{"a\x00b", panicEmbeddedNul},
+		{"\x00\xff", panicEmbeddedNul}, // the NUL scan comes first, as on read
 	}
 	for _, c := range cases {
 		text := c.text
 		w := NewWriteStream(make([]byte, 64))
-		if err := w.SerializeString(&text, 32); !errors.Is(err, c.want) {
-			t.Errorf("write %q returned %v, want %v", c.text, err, c.want)
+		if got, _ := trapped(func() { w.SerializeString(&text, 32) }); got != c.want {
+			t.Errorf("write %q trapped with %v, want %v", c.text, got, c.want)
 		}
 		if w.BitsProcessed() != 0 {
 			t.Errorf("write %q wrote %d bits", c.text, w.BitsProcessed())
 		}
 		m := NewMeasureStream()
-		if err := m.SerializeString(&text, 32); !errors.Is(err, c.want) {
-			t.Errorf("measure %q returned %v, want %v", c.text, err, c.want)
+		if got, _ := trapped(func() { m.SerializeString(&text, 32) }); got != c.want {
+			t.Errorf("measure %q trapped with %v, want %v", c.text, got, c.want)
 		}
 	}
 }
 
 // TestU10WholeOperationRoom holds U10: bytes and string check room for the whole
-// operation, field, align and payload, before writing any of it.
+// operation, field, align and payload, before writing any of it, and trap (U9).
 func TestU10WholeOperationRoom(t *testing.T) {
 	// string: the 5 bit length fits in 8 bytes, the 10 byte payload does not
 	w := NewWriteStream(make([]byte, 8))
 	text := "0123456789"
-	if err := w.SerializeString(&text, 32); !errors.Is(err, ErrPastEnd) {
-		t.Fatalf("string returned %v, want past_end", err)
+	if !panics(func() { w.SerializeString(&text, 32) }) {
+		t.Fatal("string past the end did not panic")
 	}
 	if w.BitsProcessed() != 0 {
 		t.Fatalf("the refused string wrote %d bits ahead of its payload", w.BitsProcessed())
@@ -239,8 +239,8 @@ func TestU10WholeOperationRoom(t *testing.T) {
 	b := NewWriteStream(make([]byte, 8))
 	three := uint32(5)
 	b.SerializeBits(&three, 3)
-	if err := b.SerializeBytes(make([]byte, 8)); !errors.Is(err, ErrPastEnd) {
-		t.Fatalf("bytes returned %v, want past_end", err)
+	if !panics(func() { b.SerializeBytes(make([]byte, 8)) }) {
+		t.Fatal("bytes past the end did not panic")
 	}
 	if b.BitsProcessed() != 3 {
 		t.Fatalf("the refused bytes wrote %d align bits ahead of its payload", b.BitsProcessed()-3)

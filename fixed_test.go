@@ -328,14 +328,14 @@ func TestSerializeInt128(t *testing.T) {
 		}
 	}
 
-	// 8. a write of a value outside [min,max] must be refused with an error, not
-	//    smuggled — the Go port checks on write where C++ has debug asserts
+	// 8. a write of a value outside [min,max] is write misuse and panics, never
+	//    smuggled — the C++ debug assert, the trap in every Go run (U9)
 	{
 		buffer := make([]byte, 32)
 		writeStream := NewWriteStream(buffer)
 		written := Int128From64(300)
-		if err := writeStream.SerializeInt128(&written, Int128{}, Int128From64(255)); !errors.Is(err, ErrValueOutOfRange) {
-			t.Fatalf("expected ErrValueOutOfRange, got %v", err)
+		if !panics(func() { writeStream.SerializeInt128(&written, Int128{}, Int128From64(255)) }) {
+			t.Fatal("int128 write outside [min,max] did not panic")
 		}
 	}
 }
@@ -527,14 +527,14 @@ func TestSerializeFixedValidation(t *testing.T) {
 		}
 	}
 
-	// a write of a raw value outside the bounds must be refused with an error, not
-	// smuggled — the Go port checks on write where C++ has debug asserts
+	// a write of a raw value outside the bounds is write misuse and panics, never
+	// smuggled — the C++ debug assert, the trap in every Go run (U9)
 	{
 		buffer := make([]byte, 16)
 		writeStream := NewWriteStream(buffer)
 		value := int64(101 * 256) // 101.0 in Q8.8, past +100 whole units
-		if err := writeStream.SerializeFixed64(&value, 8, 8, -100, +100); !errors.Is(err, ErrValueOutOfRange) {
-			t.Fatalf("expected ErrValueOutOfRange, got %v", err)
+		if !panics(func() { writeStream.SerializeFixed64(&value, 8, 8, -100, +100) }) {
+			t.Fatal("fixed64 write outside its bounds did not panic")
 		}
 	}
 }

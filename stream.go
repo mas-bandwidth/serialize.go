@@ -15,13 +15,20 @@ import (
 // depending on the stream. Use IsWriting and IsReading inside serialize functions for
 // logic that differs between the two, such as initializing fields that are not sent.
 //
-// Errors are sticky: the first failure latches on the stream and every later serialize
-// call returns it without touching the stream, so you can either check every call or
-// serialize a whole object and check Err once at the end. A failure is terminal, which
-// is what the wire format requires of a reader, and only ReadStream.Reset clears it. The
-// one rule: a value that controls a loop must have its error checked before the loop
-// runs, because after an error the value is never updated again. See Continue and the
-// Serializer documentation.
+// On a read stream errors are sticky: the first failure latches on the stream and every
+// later serialize call returns it without touching the stream, so you can either check
+// every call or serialize a whole object and check Err once at the end. A failure is
+// terminal, which is what the wire format requires of a reader, and only ReadStream.Reset
+// clears it. The one rule: a value that controls a loop must have its error checked
+// before the loop runs, because after an error the value is never updated again. See
+// Continue and the Serializer documentation.
+//
+// On a write or measure stream, misuse is not an error: a value outside its range or bit
+// width, a non-finite float, double or compressed float value, a bad declaration, string
+// text that is too long, ill-formed or holds a NUL, or a write that does not fit the room
+// left panics at the call, before any of the operation is written (IMPLEMENTING.md U9,
+// the trap; Go has no unchecked build, so it traps in every run). A write or measure
+// stream records nothing, and its Err is always nil.
 type Stream interface {
 	// IsWriting returns true if the stream writes or measures values (WriteStream and
 	// MeasureStream), and false if it reads them.
@@ -95,7 +102,7 @@ type Stream interface {
 
 	// SerializeFloat32 serializes an uncompressed 32 bit floating point value. The
 	// format carries finite values only: NaN and the infinities fail with
-	// ErrNonFiniteFloat on write and on read. Negative zero and the subnormals travel
+	// ErrNonFiniteFloat on read, and are write misuse, a panic, on write and measure. Negative zero and the subnormals travel
 	// bit exact.
 	SerializeFloat32(value *float32) error
 
@@ -105,7 +112,8 @@ type Stream interface {
 
 	// SerializeCompressedFloat32 serializes a floating point value in [min,max] with the
 	// given resolution, writing only the bits required for the quantized range. On write
-	// the value is clamped into [min,max]. On read a successful decode is finite and lies
+	// a finite value is clamped into [min,max]; NaN and the infinities are write misuse
+	// and panic, never clamped (IMPLEMENTING.md U9). On read a successful decode is finite and lies
 	// in [min, min + delta], where delta is max - min rounded in float32 (see
 	// CompressedFloatParams): delta can round up, so the top integer can decode a little
 	// above max, and a reader keeps those exact bits, never clamping them
@@ -130,7 +138,9 @@ type Stream interface {
 	// string bytes are block copied. bufferSize mirrors the C++ API, where a string with
 	// its terminating null character must fit into the buffer, keeping streams
 	// compatible between the two languages. The payload is well-formed UTF-8 with no
-	// interior NUL: the writer's contract (STANDARD.md string), and enforced on read —
+	// interior NUL: the writer's contract (STANDARD.md string), a panic on write and
+	// measure when broken, as is text longer than bufferSize-1 (U9; see CopyString),
+	// and enforced on read —
 	// a read of a payload holding a zero byte fails with ErrEmbeddedNul, and one that
 	// is not well-formed UTF-8 with ErrInvalidUTF8. Arbitrary byte payloads belong to
 	// SerializeBytes.
@@ -186,7 +196,9 @@ type Stream interface {
 //
 // Return an error to abort serialization: the standard pattern is to call serialize
 // methods for each field and return stream.Err() at the end, adding your own
-// validation errors where needed.
+// validation errors where needed. On a read stream SerializeObject latches the error as
+// ErrRejected (STANDARD.md 2.1); on a write or measure stream it returns it and records
+// nothing (IMPLEMENTING.md U9).
 //
 // IMPORTANT: A value that controls how much more work your serialize function does —
 // a loop count or a continuation bit — must have its error checked before you use it.
@@ -498,17 +510,16 @@ func fixedPointParams128(integerBits, fractionBits int, min, max int64) (rawMin,
 }
 
 // checkStringText is the writer's and the measure's string text check (IMPLEMENTING.md
-// U3 and U4): a NUL among the bytes is ErrEmbeddedNul and text that is not well-formed
-// UTF-8 is ErrInvalidUTF8, the reasons a reader gives the same payload, NUL first as on
-// read. A Go string may hold any bytes, so the check is the only thing standing between
-// a caller's malformed text and a payload every conforming reader refuses: text is sent
-// byte for byte or not at all, never replaced.
-func checkStringText(text string) error {
+// U3, U4 and U9): text holding a NUL, or not well-formed UTF-8, is write misuse and
+// panics, NUL first, as a reader refuses it first. A Go string may hold any bytes, so
+// the check is the only thing standing between a caller's malformed text and a payload
+// every conforming reader refuses: text is sent byte for byte or not at all, never
+// replaced.
+func checkStringText(text string) {
 	if strings.IndexByte(text, 0) >= 0 {
-		return ErrEmbeddedNul
+		panic(panicEmbeddedNul)
 	}
 	if !utf8.ValidString(text) {
-		return ErrInvalidUTF8
+		panic(panicInvalidUTF8)
 	}
-	return nil
 }

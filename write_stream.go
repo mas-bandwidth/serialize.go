@@ -6,9 +6,18 @@ import (
 )
 
 // WriteStream writes bitpacked data to a buffer. It carries the bit writer state in
-// four flat fields with overflow and range checking that returns errors instead of
-// panicking, and implements the Stream interface so unified serialize functions can
-// write with it.
+// four flat fields and implements the Stream interface so unified serialize functions
+// can write with it.
+//
+// The caller is responsible for well-formed writes. Write misuse — a value outside its
+// range or its bit width, a float, double or compressed float value that is not finite,
+// a bad declaration, string text that is not well-formed UTF-8, holds a NUL or does not
+// fit bufferSize-1, a buffer that is not a multiple of 8 bytes, an operation that does
+// not fit the room left — is not a refusal: it panics at the call, before any bit of the
+// operation is written (IMPLEMENTING.md U9, the trap; this port has no unchecked build,
+// so it traps in every run). A write stream records nothing: no misuse latches a
+// reason, Err is always nil, and every operation that returns returns nil, except a
+// nested object whose Serialize returns an error, which SerializeObject returns as it is.
 //
 // The writer state is deliberately flat (not a wrapped BitWriter) and minimal, so the
 // packing helper fits the compiler's inlining budget: the pending bit count is
@@ -18,21 +27,18 @@ import (
 //
 // What that buys, stated as measured rather than as intent (go1.27.0, budget 80):
 // tryWriteBits costs 64 and inlines, so a caller that packs directly pays no call.
-// The per-field entry point writeBits costs 92 and DOES NOT inline — its error latch
-// and the fail path push it past the budget — so generated code calling writeBits per
-// field pays one real call per field. ReadStream.readBits is the same shape at 106.
-// Closing that gap is a live question (mas-bandwidth/schema#170's B1); nothing here
-// should be read as claiming it is already closed.
+// The per-field entry point writeBits wraps it with the past-end trap. ReadStream.readBits
+// is outlined at 106. Closing that gap is a live question (mas-bandwidth/schema#170's
+// B1); nothing here should be read as claiming it is already closed.
 //
 // The zero value is not usable: create a WriteStream with NewWriteStream, or Reset one
 // onto a buffer before use.
 type WriteStream struct {
 	data        []byte
 	scratch     uint64 // pending bits: the low bitsWritten&63 bits, above bits zero
-	numBits     int64  // len(data)*8, or -1 after a latched error (see fail)
+	numBits     int64  // len(data)*8
 	bitsWritten int64
 	context     any
-	err         error
 }
 
 // NewWriteStream creates a write stream that writes to the given buffer. The buffer size
@@ -43,8 +49,7 @@ func NewWriteStream(buffer []byte) *WriteStream {
 	return s
 }
 
-// Reset points the stream at a buffer and clears all write state including any latched
-// error, allowing a single stream to be reused without allocation. The context is kept.
+// Reset points the stream at a buffer and clears all write state, allowing a single stream to be reused without allocation. The context is kept.
 // The buffer size must be a multiple of 8 bytes.
 func (s *WriteStream) Reset(buffer []byte) {
 	if len(buffer)%8 != 0 {
@@ -54,7 +59,6 @@ func (s *WriteStream) Reset(buffer []byte) {
 	s.scratch = 0
 	s.numBits = int64(len(buffer)) * 8
 	s.bitsWritten = 0
-	s.err = nil
 }
 
 // IsWriting returns true.
@@ -63,23 +67,18 @@ func (s *WriteStream) IsWriting() bool { return true }
 // IsReading returns false.
 func (s *WriteStream) IsReading() bool { return false }
 
-// fail latches the first error on the stream and returns the latched error. It also
-// poisons the bit budget, so the per-write bounds check refuses every write after an
-// error without a separate error load on the hot path: writes after a latched error
-// return the latched error and write nothing, exactly as before. Reset restores the
-// budget.
-func (s *WriteStream) fail(err error) error {
-	if s.err == nil {
-		s.err = err
+// room panics unless bits more bits fit the buffer: a write that does not fit the room
+// left is write misuse (IMPLEMENTING.md U9, U10), checked for the whole operation before
+// any of it is written.
+func (s *WriteStream) room(bits int64) {
+	if s.bitsWritten+bits > s.numBits {
+		panic(panicWriteOverflow)
 	}
-	s.numBits = -1
-	return s.err
 }
 
 // tryWriteBits packs bits that have already been validated to [1,32], with value
 // already masked to that width, reporting false if the write would go past the end of
-// the buffer — or if the stream carries a latched error, because fail poisons numBits
-// and the same comparison covers both. It exists so per-field serialize calls can fuse
+// the buffer. It exists so per-field serialize calls can fuse
 // the bounds check and the bit packing into their own bodies: the body stays within
 // the compiler's inlining budget (the write twin of BitReader.readBits).
 //
@@ -126,11 +125,18 @@ func (s *WriteStream) tryWriteBits64(value uint64, bits int) bool {
 }
 
 // writeBits bounds checks and writes bits that have already been validated to [1,32]
-// and masked to that width. One outlined call per field with no calls inside it: the
-// packing fast path and the error latch both fuse into this body.
+// and masked to that width. A write past the end panics (U9, U10) and writes nothing.
 func (s *WriteStream) writeBits(value uint32, bits int) error {
 	if !s.tryWriteBits(value, bits) {
-		return s.fail(ErrPastEnd)
+		panic(panicWriteOverflow)
+	}
+	return nil
+}
+
+// writeBits64 is writeBits for widths in [1,64].
+func (s *WriteStream) writeBits64(value uint64, bits int) error {
+	if !s.tryWriteBits64(value, bits) {
+		panic(panicWriteOverflow)
 	}
 	return nil
 }
@@ -144,72 +150,68 @@ func (s *WriteStream) writeBool(value bool) error {
 	return s.writeBits(v, 1)
 }
 
-// SerializeBits writes the low order bits of *value. bits must be in [1,32].
+// SerializeBits writes *value in bits bits. bits must be in [1,32], and a value wider
+// than its field panics (IMPLEMENTING.md U8, U9).
 func (s *WriteStream) SerializeBits(value *uint32, bits int) error {
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
 	}
-	// a value wider than its field is write misuse (IMPLEMENTING.md U8), refused before
+	// a value wider than its field is write misuse (IMPLEMENTING.md U8), caught before
 	// anything is written; masking it would send bytes that differ from the caller's value
 	v := *value
 	if v > ^uint32(0)>>(32-bits) {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueTooWide)
 	}
 	return s.writeBits(v, bits)
 }
 
-// SerializeBits64 writes the low order bits of *value. bits must be in [1,64].
-// Values wider than 32 bits are written as the low dword first, then the high remainder.
+// SerializeBits64 writes *value in bits bits. bits must be in [1,64], and a value
+// wider than its field panics (U8, U9). Values wider than 32 bits are written as the
+// low dword first, then the high remainder.
 func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
 	}
 	v := *value
 	if v > ^uint64(0)>>(64-bits) {
-		return s.fail(ErrValueOutOfRange) // U8, as SerializeBits
+		panic(panicValueTooWide) // U8, as SerializeBits
 	}
-	if !s.tryWriteBits64(v, bits) {
-		return s.fail(ErrPastEnd)
-	}
-	return nil
+	return s.writeBits64(v, bits)
 }
 
 // SerializeInt writes *value, which must be in [min,max], using only the bits required
-// to represent the range. Returns ErrValueOutOfRange if it is not.
+// to represent the range. A value outside it panics (U9).
 func (s *WriteStream) SerializeInt(value *int32, min, max int32) error {
 	if min > max {
 		panic(panicMinMax)
 	}
 	v := *value
 	if v < min || v > max {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	bits := BitsRequired(uint32(min), uint32(max))
 	// subtract in the unsigned domain: the range may be wider than 2^31. The offset
 	// is within the range, so it is already masked to bits.
 	if !s.tryWriteBits(uint32(v)-uint32(min), bits) {
-		return s.fail(ErrPastEnd)
+		panic(panicWriteOverflow)
 	}
 	return nil
 }
 
 // SerializeInt64 writes *value, which must be in [min,max], using only the bits required
-// to represent the range. Returns ErrValueOutOfRange if it is not.
+// to represent the range. A value outside it panics (U9).
 func (s *WriteStream) SerializeInt64(value *int64, min, max int64) error {
 	if min > max {
 		panic(panicMinMax)
 	}
 	v := *value
 	if v < min || v > max {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	bits := BitsRequired64(uint64(min), uint64(max))
 	// subtract in the unsigned domain: the range may be wider than 2^63. The offset is
 	// within the range, so it is already masked to bits.
-	if !s.tryWriteBits64(uint64(v)-uint64(min), bits) {
-		return s.fail(ErrPastEnd)
-	}
-	return nil
+	return s.writeBits64(uint64(v)-uint64(min), bits)
 }
 
 // writeGroups128 writes a 128 bit offset least significant half first, with the final
@@ -227,7 +229,7 @@ func (s *WriteStream) writeGroups128(offset Uint128, numBits int) {
 }
 
 // SerializeInt128 writes *value, which must be in [min,max], using only the bits
-// required to represent the range. Returns ErrValueOutOfRange if it is not. The
+// required to represent the range. A value outside it panics (U9). The
 // offset from min is computed in the unsigned domain, so ranges wider than 2^127
 // are exact. Where the range fits 64 bits or fewer the bytes are identical to
 // SerializeInt64 over the same bounds.
@@ -235,17 +237,12 @@ func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
 	if min.Cmp(max) > 0 {
 		panic(panicMinMax)
 	}
-	if s.err != nil {
-		return s.err
-	}
 	v := *value
 	if v.Cmp(min) < 0 || v.Cmp(max) > 0 {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
 	numBits := BitsRequired128(min.Uint128(), max.Uint128())
-	if s.bitsWritten+int64(numBits) > s.numBits {
-		return s.fail(ErrPastEnd)
-	}
+	s.room(int64(numBits))
 	s.writeGroups128(v.Uint128().Sub(min.Uint128()), numBits)
 	return nil
 }
@@ -255,9 +252,7 @@ func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
 // stream is byte aligned the result is the 16 bytes of the value in little endian
 // order.
 func (s *WriteStream) SerializeUint128(value *Uint128) error {
-	if s.bitsWritten+128 > s.numBits {
-		return s.fail(ErrPastEnd)
-	}
+	s.room(128)
 	s.tryWriteBits64(value.Lo, 64)
 	s.tryWriteBits64(value.Hi, 64)
 	return nil
@@ -265,7 +260,7 @@ func (s *WriteStream) SerializeUint128(value *Uint128) error {
 
 // SerializeFixed64 writes a raw fixed point value in *value, which must be within
 // [min,max] whole units, as an offset from the raw (scaled) minimum in the bits
-// required for the raw range. Returns ErrValueOutOfRange if it is not. The wire
+// required for the raw range. A value outside it panics (U9). The wire
 // format is byte identical to SerializeInt64 of the raw value over the raw bounds.
 func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams64(integerBits, fractionBits, min, max)
@@ -273,34 +268,25 @@ func (s *WriteStream) SerializeFixed64(value *int64, integerBits, fractionBits i
 	// subtract in the unsigned domain: the raw range may be wider than 2^63
 	offset := uint64(*value) - rawMin
 	if offset > rawRange {
-		return s.fail(ErrValueOutOfRange)
-	}
-	if s.bitsWritten+int64(numBits) > s.numBits {
-		return s.fail(ErrPastEnd)
+		panic(panicValueOutOfRange)
 	}
 	// the offset is within the raw range, so both dwords are already masked
-	s.tryWriteBits64(offset, numBits)
-	return nil
+	return s.writeBits64(offset, numBits)
 }
 
 // SerializeFixed128 writes a raw wide fixed point value in *value, which must be
 // within [min,max] whole units, as an offset from the raw (scaled) minimum in the
-// bits required for the raw range. Returns ErrValueOutOfRange if it is not.
+// bits required for the raw range. A value outside it panics (U9).
 // integerBits plus fractionBits must equal 128.
 func (s *WriteStream) SerializeFixed128(value *Int128, integerBits, fractionBits int, min, max int64) error {
 	rawMin, rawRange, numBits := fixedPointParams128(integerBits, fractionBits, min, max)
 	checkFixedPointParams(numBits)
-	if s.err != nil {
-		return s.err
-	}
 	// subtract in the unsigned domain: the raw range may be wider than 2^127
 	offset := value.Uint128().Sub(rawMin)
 	if offset.Cmp(rawRange) > 0 {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicValueOutOfRange)
 	}
-	if s.bitsWritten+int64(numBits) > s.numBits {
-		return s.fail(ErrPastEnd)
-	}
+	s.room(int64(numBits))
 	s.writeGroups128(offset, numBits)
 	return nil
 }
@@ -322,10 +308,7 @@ func (s *WriteStream) SerializeUint32(value *uint32) error {
 
 // SerializeUint64 writes an unsigned 64 bit integer as the low dword then the high dword.
 func (s *WriteStream) SerializeUint64(value *uint64) error {
-	if !s.tryWriteBits64(*value, 64) {
-		return s.fail(ErrPastEnd)
-	}
-	return nil
+	return s.writeBits64(*value, 64)
 }
 
 // SerializeBool writes a boolean value with one bit.
@@ -335,12 +318,12 @@ func (s *WriteStream) SerializeBool(value *bool) error {
 
 // SerializeFloat32 writes an uncompressed 32 bit floating point value. The format
 // carries finite values only, as an int carries values inside its range: NaN and the
-// infinities return ErrNonFiniteFloat and write nothing. Negative zero and the
-// subnormals are written bit exact.
+// infinities are write misuse and panic (U9). Negative zero and the subnormals are
+// written bit exact.
 func (s *WriteStream) SerializeFloat32(value *float32) error {
 	bits := math.Float32bits(*value)
 	if !float32BitsAreFinite(bits) {
-		return s.fail(ErrNonFiniteFloat)
+		panic(panicNonFiniteFloat)
 	}
 	return s.writeBits(bits, 32)
 }
@@ -350,9 +333,9 @@ func (s *WriteStream) SerializeFloat32(value *float32) error {
 func (s *WriteStream) SerializeFloat64(value *float64) error {
 	bits := math.Float64bits(*value)
 	if !float64BitsAreFinite(bits) {
-		return s.fail(ErrNonFiniteFloat)
+		panic(panicNonFiniteFloat)
 	}
-	return s.SerializeUint64(&bits)
+	return s.writeBits64(bits, 64)
 }
 
 // SerializeCompressedFloat32 quantizes *value into [min,max] at the given resolution and
@@ -388,8 +371,8 @@ func (s *WriteStream) SerializeCompressedFloat32Precomputed(value *float32, maxI
 // compressedFloat32Precomputed is the one audited home of the write-side compressed
 // float quantization arithmetic. Both entry points reach it: SerializeCompressedFloat32
 // after deriving the constants, SerializeCompressedFloat32Precomputed after validating
-// the caller's. The value is clamped into the declared range before quantization; the
-// !>= / !<= clamp form forces NaN into range too.
+// the caller's. A value that is NaN or an infinity is write misuse and panics, never
+// clamped (U9); a finite value is clamped into the declared range before quantization.
 //
 // A declaration whose top integer decodes to a value that is not finite — min + delta,
 // rounded once in float32 — is non-conforming as a whole (STANDARD.md, "The decode
@@ -399,6 +382,9 @@ func (s *WriteStream) SerializeCompressedFloat32Precomputed(value *float32, maxI
 func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerValue uint32, bits int, delta, min float32) error {
 	if !float32BitsAreFinite(math.Float32bits(min + delta)) {
 		panic(panicCompressedFloatDecode)
+	}
+	if !float32BitsAreFinite(math.Float32bits(*value)) {
+		panic(panicNonFiniteFloat)
 	}
 	normalizedValue := (*value - min) / delta
 	if !(normalizedValue >= 0) {
@@ -463,46 +449,36 @@ func writeBytesStream[T ~[]byte | ~string](s *WriteStream, data T) {
 }
 
 // SerializeBytes aligns the stream to a byte boundary and block copies data into it.
+// An operation that does not fit the room left panics before any of it is written.
 func (s *WriteStream) SerializeBytes(data []byte) error {
 	// room for the whole operation, align and payload, before any of it (U10)
 	alignBits := -s.bitsWritten & 7
-	if s.bitsWritten+alignBits+int64(len(data))*8 > s.numBits {
-		return s.fail(ErrPastEnd)
-	}
-	if err := s.SerializeAlign(); err != nil {
-		return err
-	}
+	s.room(alignBits + int64(len(data))*8)
+	s.tryWriteBits(0, int(alignBits))
 	writeBytesStream(s, data)
 	return nil
 }
 
 // SerializeString writes the length of *value in [0,bufferSize-1], aligns the stream to
-// a byte boundary, then block copies the string bytes. Returns ErrValueOutOfRange if the
-// string does not fit in bufferSize-1 bytes.
+// a byte boundary, then block copies the string bytes. Text longer than bufferSize-1
+// bytes, holding a NUL, or not well-formed UTF-8 is write misuse and panics (U3, U4,
+// U9), as does an operation that does not fit the room left, before any of it is
+// written (U10). CopyString bounds a string to a buffer size.
 func (s *WriteStream) SerializeString(value *string, bufferSize int) error {
 	validateBufferSize(bufferSize)
-	if s.err != nil {
-		return s.err
-	}
 	if len(*value) >= bufferSize {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicStringTooLong)
 	}
-	if err := checkStringText(*value); err != nil {
-		return s.fail(err)
-	}
+	checkStringText(*value)
 	length := int32(len(*value))
-	// room for the whole operation, length, align and payload, before any of it (U10)
-	end := s.bitsWritten + int64(BitsRequired(0, uint32(bufferSize-1)))
-	end += -end & 7
-	if end+int64(length)*8 > s.numBits {
-		return s.fail(ErrPastEnd)
-	}
-	if err := s.SerializeInt(&length, 0, int32(bufferSize-1)); err != nil {
-		return err
-	}
-	if err := s.SerializeAlign(); err != nil {
-		return err
-	}
+	// room for the whole operation, length, align and payload, before any of it (U10);
+	// the packing below is then already bounds checked
+	lengthBits := BitsRequired(0, uint32(bufferSize-1))
+	end := s.bitsWritten + int64(lengthBits)
+	alignBits := -end & 7
+	s.room(int64(lengthBits) + alignBits + int64(length)*8)
+	s.tryWriteBits(uint32(length), lengthBits)
+	s.tryWriteBits(0, int(alignBits))
 	writeBytesStream(s, *value)
 	return nil
 }
@@ -511,50 +487,41 @@ func (s *WriteStream) SerializeString(value *string, bufferSize int) error {
 //
 // The body is shaped to fit the compiler's inlining budget, so an already aligned
 // stream pays no call at all: generated code aligns wherever the schema says align,
-// and the position is frequently already a byte boundary. The aligned arm returns
-// s.err, which is nil on a healthy stream; the padding arm's writeBits refuses via
-// the poisoned bit budget after a latched error. Both are exactly the behavior of
-// the leading error check they replace.
+// and the position is frequently already a byte boundary.
 func (s *WriteStream) SerializeAlign() error {
 	alignBits := int(-s.bitsWritten) & 7 // (8 - bitsWritten%8) % 8, in two's complement
 	if alignBits == 0 {
-		return s.err
+		return nil
 	}
 	return s.writeBits(0, alignBits)
 }
 
 // SerializeEnd writes the end of the object, which emits nothing: the unused bits of
 // the final byte are already zero, and Flush and Data hand on exactly the bytes the
-// object occupies. It exists so one serialize function reads its end too.
+// object occupies. It exists so one serialize function reads its end too. It returns
+// nil (IMPLEMENTING.md U12).
 func (s *WriteStream) SerializeEnd() error {
-	return s.err
+	return nil
 }
 
-// SerializeObject writes an object that implements Serializer.
+// SerializeObject writes an object that implements Serializer. An error the object's
+// Serialize method returns is returned as it is and recorded nowhere (U9): a write
+// stream has no refusal state.
 func (s *WriteStream) SerializeObject(object Serializer) error {
-	if s.err != nil {
-		return s.err
-	}
-	if err := object.Serialize(s); err != nil {
-		return s.fail(err)
-	}
-	return s.err
+	return object.Serialize(s)
 }
 
 // SerializeIntRelative writes *current relative to previous, using fewer bits the closer
 // the two values are. Both values live in the int_relative domain, 0 to 2147483647
-// (STANDARD.md int_relative): previous outside it is API misuse and panics, and previous
-// not less than *current returns ErrValueOutOfRange, which leaves *current in the domain
-// on every write this method performs.
+// (STANDARD.md int_relative): previous outside it, or previous not less than *current,
+// is write misuse and panics (U9), which leaves *current in the domain on every write
+// this method performs.
 func (s *WriteStream) SerializeIntRelative(previous int32, current *int32) error {
 	if previous < intRelativeMin {
 		panic(panicIntRelativeDomain)
 	}
-	if s.err != nil {
-		return s.err
-	}
 	if previous >= *current {
-		return s.fail(ErrValueOutOfRange)
+		panic(panicIntRelativeOrder)
 	}
 	difference := uint32(*current) - uint32(previous)
 	if err := s.writeBool(difference == 1); err != nil {
@@ -612,9 +579,11 @@ func (s *WriteStream) BytesProcessed() int64 {
 	return (s.bitsWritten + 7) / 8
 }
 
-// Err returns the first error latched on the stream, or nil.
+// Err returns nil: a write stream records nothing (IMPLEMENTING.md U9). Write misuse
+// panics at the call instead. It exists so a unified serialize function can return
+// stream.Err() whatever the stream.
 func (s *WriteStream) Err() error {
-	return s.err
+	return nil
 }
 
 // SetContext sets a context value that serialize functions can retrieve with Context.

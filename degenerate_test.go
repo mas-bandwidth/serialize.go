@@ -1,7 +1,6 @@
 package serialize
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -336,11 +335,11 @@ func TestDegenerateStringBufferSize(t *testing.T) {
 			t.Errorf("measure says %d bits, want at most the conservative align worst case 7", got)
 		}
 
-		// a non-empty string still cannot fit: the writer's normal rejection
+		// a non-empty string still cannot fit: write misuse, the trap (U9)
 		w2 := NewWriteStream(make([]byte, 64))
 		nonEmpty := "x"
-		if err := w2.SerializeString(&nonEmpty, 1); !errors.Is(err, ErrValueOutOfRange) {
-			t.Errorf("non-empty string at bufferSize 1: got %v, want ErrValueOutOfRange", err)
+		if !panics(func() { w2.SerializeString(&nonEmpty, 1) }) {
+			t.Error("non-empty string at bufferSize 1 did not panic")
 		}
 	})
 
