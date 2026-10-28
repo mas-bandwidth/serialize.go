@@ -465,7 +465,7 @@ func writeBytesStream[T ~[]byte | ~string](s *WriteStream, data T) {
 // SerializeBytes aligns the stream to a byte boundary and block copies data into it.
 func (s *WriteStream) SerializeBytes(data []byte) error {
 	// room for the whole operation, align and payload, before any of it (U10)
-	alignBits := int64(-s.bitsWritten) & 7
+	alignBits := -s.bitsWritten & 7
 	if s.bitsWritten+alignBits+int64(len(data))*8 > s.numBits {
 		return s.fail(ErrPastEnd)
 	}
@@ -493,7 +493,7 @@ func (s *WriteStream) SerializeString(value *string, bufferSize int) error {
 	length := int32(len(*value))
 	// room for the whole operation, length, align and payload, before any of it (U10)
 	end := s.bitsWritten + int64(BitsRequired(0, uint32(bufferSize-1)))
-	end += int64(-end) & 7
+	end += -end & 7
 	if end+int64(length)*8 > s.numBits {
 		return s.fail(ErrPastEnd)
 	}

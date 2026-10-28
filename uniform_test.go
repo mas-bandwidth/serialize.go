@@ -62,10 +62,13 @@ func TestU7ReadDeclarationMisuseRefuses(t *testing.T) {
 			v := float32(7)
 			return r.SerializeCompressedFloat32Precomputed(&v, 1000, 10, float32(math.Inf(1)), 0)
 		},
-		"string buffer 0":    func(r *ReadStream) error { v := "keep"; return r.SerializeString(&v, 0) },
-		"string buffer -1":   func(r *ReadStream) error { v := "keep"; return r.SerializeString(&v, -1) },
-		"string buffer wide": func(r *ReadStream) error { v := "keep"; return r.SerializeString(&v, math.MaxInt32+1) },
-		"int_relative prev":  func(r *ReadStream) error { v := int32(7); return r.SerializeIntRelative(-1, &v) },
+		"string buffer 0":   func(r *ReadStream) error { v := "keep"; return r.SerializeString(&v, 0) },
+		"string buffer -1":  func(r *ReadStream) error { v := "keep"; return r.SerializeString(&v, -1) },
+		"int_relative prev": func(r *ReadStream) error { v := int32(7); return r.SerializeIntRelative(-1, &v) },
+	}
+	if math.MaxInt > math.MaxInt32 { // a bufferSize past int32 exists only where int is 64 bits
+		wide := int64(math.MaxInt32) + 1
+		cases["string buffer wide"] = func(r *ReadStream) error { v := "keep"; return r.SerializeString(&v, int(wide)) }
 	}
 	for name, call := range cases {
 		t.Run(name, func(t *testing.T) {
