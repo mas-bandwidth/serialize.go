@@ -284,3 +284,25 @@ func TestU15CopyString(t *testing.T) {
 		}
 	}
 }
+
+// TestU1WriteBufferMultipleOf8 holds U1 with U9: a write buffer that is not a multiple
+// of 8 bytes is write misuse and traps, on the stream and on the exported BitWriter,
+// at construction and at Reset. Kept since v1.0; cited here.
+func TestU1WriteBufferMultipleOf8(t *testing.T) {
+	for _, size := range []int{1, 4, 7, 12} {
+		if _, ok := trapped(func() { NewWriteStream(make([]byte, size)) }); !ok {
+			t.Errorf("NewWriteStream(%d bytes) did not trap", size)
+		}
+		if _, ok := trapped(func() { NewWriteStream(make([]byte, 8)).Reset(make([]byte, size)) }); !ok {
+			t.Errorf("WriteStream.Reset(%d bytes) did not trap", size)
+		}
+		if _, ok := trapped(func() { NewBitWriter(make([]byte, size)) }); !ok {
+			t.Errorf("NewBitWriter(%d bytes) did not trap", size)
+		}
+	}
+	for _, size := range []int{0, 8, 16} {
+		if _, ok := trapped(func() { NewWriteStream(make([]byte, size)) }); ok {
+			t.Errorf("NewWriteStream(%d bytes) trapped", size)
+		}
+	}
+}
