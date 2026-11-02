@@ -518,7 +518,7 @@ func checkFuzzRoundTrip(t fuzzTB, a uint32, aBits uint8, b uint64, bBits uint8, 
 		if ctl == fuzzControlCanary {
 			tight[tightBytes] = 0 // NEGATIVE CONTROL
 		}
-		for i := 0; i < canaryBytes; i++ {
+		for i := range canaryBytes {
 			fuzzCheck(t, "canary", tight[tightBytes+i] == 0xAA,
 				"canary byte %d corrupted: %#02x", i, tight[tightBytes+i])
 		}
@@ -673,7 +673,7 @@ func runFuzzReplay(tb fuzzTB, count int, ctl fuzzControl) {
 	checkFuzzReadStream(tb, bytes.Repeat([]byte{0xFF}, 64), ctl)
 	checkFuzzReadStream(tb, goldenWireBytes, ctl)
 
-	for n := 0; n < count; n++ {
+	for n := range count {
 		length := 1 + int(next()%256)
 		if n%7 == 0 {
 			length = int(next() % 8)
