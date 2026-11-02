@@ -44,40 +44,49 @@ func repeatByte64(b byte) uint64 {
 	return v | v<<32
 }
 
+const fuzzReadSeqNumOps = 23
+
 // runFuzzReadSentinel runs the hostile read sequence with every scalar destination
 // pre-filled with a sentinel derived from pattern (0x5A or 0xA5). A refused scalar
 // read must leave its destination untouched (STANDARD.md), and once the stream has
 // refused, every subsequent operation must refuse with the same latched Refusal,
 // advance the cursor by 0 bits, and leave its scalar destination untouched.
-func runFuzzReadSentinel(t fuzzTB, data []byte, pattern byte, ctl fuzzControl) {
+// It returns the index (0..fuzzReadSeqNumOps-1) of the first operation that refused,
+// or fuzzReadSeqNumOps if every operation in the sequence accepted.
+func runFuzzReadSentinel(t fuzzTB, data []byte, pattern byte, ctl fuzzControl) (int, Refusal) {
 	stream := NewReadStream(data)
 	var firstRefusal Refusal
 	var bitsAtRefusal int64
+	firstFailedIdx := fuzzReadSeqNumOps
+	opIdx := 0
 
 	checkOp := func(err error, unchanged bool) {
+		idx := opIdx
+		opIdx++
 		if firstRefusal != 0 {
 			gotBits := stream.BitsProcessed()
 			if ctl == fuzzControlTerminality {
 				gotBits++ // NEGATIVE CONTROL
 			}
-			fuzzCheck(t, "terminality", err != nil, "operation succeeded after refusal %v", firstRefusal)
-			fuzzCheck(t, "terminality", errors.Is(err, firstRefusal), "operation returned %v, want latched %v", err, firstRefusal)
+			fuzzCheck(t, "terminality", err != nil, "operation %d succeeded after refusal %v", idx, firstRefusal)
+			fuzzCheck(t, "terminality", errors.Is(err, firstRefusal), "operation %d returned %v, want latched %v", idx, err, firstRefusal)
 			fuzzCheck(t, "terminality", errors.Is(stream.Err(), firstRefusal), "stream.Err() is %v, want latched %v", stream.Err(), firstRefusal)
 			fuzzCheck(t, "terminality", gotBits == bitsAtRefusal, "cursor moved from %d to %d after refusal", bitsAtRefusal, gotBits)
-			fuzzCheck(t, "sentinel", unchanged, "refused operation on failed stream modified scalar destination (pattern %#02x)", pattern)
+			fuzzCheck(t, "sentinel", unchanged, "refused operation %d on failed stream modified scalar destination (pattern %#02x)", idx, pattern)
 			return
 		}
 		if err == nil {
-			fuzzCheck(t, "sentinel", stream.Err() == nil, "operation returned nil but stream.Err() is %v", stream.Err())
+			fuzzCheck(t, "sentinel", stream.Err() == nil, "operation %d returned nil but stream.Err() is %v", idx, stream.Err())
 			return
 		}
 		var refusal Refusal
 		fuzzCheck(t, "sentinel", errors.As(err, &refusal) && refusal >= ErrPastEnd && refusal <= ErrRejected,
 			"refusal %v is not a valid Refusal reason", err)
 		fuzzCheck(t, "sentinel", errors.Is(stream.Err(), refusal), "stream.Err() %v does not match returned %v", stream.Err(), refusal)
-		fuzzCheck(t, "sentinel", unchanged, "refused operation modified scalar destination (pattern %#02x)", pattern)
+		fuzzCheck(t, "sentinel", unchanged, "refused operation %d modified scalar destination (pattern %#02x)", idx, pattern)
 		firstRefusal = refusal
 		bitsAtRefusal = stream.BitsProcessed()
+		firstFailedIdx = idx
 	}
 
 	u32Sent := repeatByte32(pattern)
@@ -93,6 +102,7 @@ func runFuzzReadSentinel(t fuzzTB, data []byte, pattern byte, ctl fuzzControl) {
 	u128Sent := Uint128{Lo: u64Sent, Hi: u64Sent}
 	i128Sent := Int128{Lo: u64Sent, Hi: u64Sent}
 
+	// op 0: bits(7)
 	u32 := u32Sent
 	err := stream.SerializeBits(&u32, 7)
 	if ctl == fuzzControlSentinel && err != nil {
@@ -100,81 +110,101 @@ func runFuzzReadSentinel(t fuzzTB, data []byte, pattern byte, ctl fuzzControl) {
 	}
 	checkOp(err, u32 == u32Sent)
 
+	// op 1: bits64(33)
 	u64 := u64Sent
 	err = stream.SerializeBits64(&u64, 33)
 	checkOp(err, u64 == u64Sent)
 
+	// op 2: int[-5, 100]
 	i32 := i32Sent
 	err = stream.SerializeInt(&i32, -5, 100)
 	checkOp(err, i32 == i32Sent)
 
+	// op 3: int64 full range
 	i64 := i64Sent
 	err = stream.SerializeInt64(&i64, math.MinInt64, math.MaxInt64)
 	checkOp(err, i64 == i64Sent)
 
+	// op 4: int_relative(100)
 	rel := i32Sent
 	err = stream.SerializeIntRelative(100, &rel)
 	checkOp(err, rel == i32Sent)
 
+	// op 5: uint8
 	u8 := u8Sent
 	err = stream.SerializeUint8(&u8)
 	checkOp(err, u8 == u8Sent)
 
+	// op 6: uint16
 	u16 := u16Sent
 	err = stream.SerializeUint16(&u16)
 	checkOp(err, u16 == u16Sent)
 
+	// op 7: uint32
 	u32 = u32Sent
 	err = stream.SerializeUint32(&u32)
 	checkOp(err, u32 == u32Sent)
 
+	// op 8: uint64
 	u64 = u64Sent
 	err = stream.SerializeUint64(&u64)
 	checkOp(err, u64 == u64Sent)
 
+	// op 9: bool
 	flag := boolSent
 	err = stream.SerializeBool(&flag)
 	checkOp(err, flag == boolSent)
 
+	// op 10: float32
 	f32 := f32Sent
 	err = stream.SerializeFloat32(&f32)
 	checkOp(err, math.Float32bits(f32) == u32Sent)
 
+	// op 11: compressed_float32
 	f32 = f32Sent
 	err = stream.SerializeCompressedFloat32(&f32, -1, 1, 0.001)
 	checkOp(err, math.Float32bits(f32) == u32Sent)
 
+	// op 12: float64
 	f64 := f64Sent
 	err = stream.SerializeFloat64(&f64)
 	checkOp(err, math.Float64bits(f64) == u64Sent)
 
+	// op 13: align (reached at bit 340, unaligned, so nonzero padding can refuse here)
+	err = stream.SerializeAlign()
+	checkOp(err, true)
+
+	// op 14: string(300)
 	str := strSent
 	err = stream.SerializeString(&str, 300)
 	checkOp(err, str == strSent)
 
-	err = stream.SerializeAlign()
-	checkOp(err, true)
-
+	// op 15: bytes(33)
 	buf := make([]byte, 33)
 	err = stream.SerializeBytes(buf)
 	checkOp(err, true) // caller-owned byte slice is unspecified after refusal
 
+	// op 16: uint128
 	v128 := u128Sent
 	err = stream.SerializeUint128(&v128)
 	checkOp(err, v128 == u128Sent)
 
+	// op 17: fixed64 Q16.16
 	fixed32 := i64Sent
 	err = stream.SerializeFixed64(&fixed32, 16, 16, -1000, +1000)
 	checkOp(err, fixed32 == i64Sent)
 
+	// op 18: fixed64 Q48.16
 	fixed64 := i64Sent
 	err = stream.SerializeFixed64(&fixed64, 48, 16, -100000000000, +100000000000)
 	checkOp(err, fixed64 == i64Sent)
 
+	// op 19: fixed128 Q112.16
 	wide := i128Sent
 	err = stream.SerializeFixed128(&wide, 112, 16, -1152921504606846976, +1152921504606846976)
 	checkOp(err, wide == i128Sent)
 
+	// op 20: int128 ranged
 	param := 0
 	if len(data) > 0 {
 		param = int(data[0])
@@ -184,12 +214,14 @@ func runFuzzReadSentinel(t fuzzTB, data []byte, pattern byte, ctl fuzzControl) {
 	err = stream.SerializeInt128(&ranged128, bound128.Neg(), bound128)
 	checkOp(err, ranged128 == i128Sent)
 
+	// op 21: int128 full range
 	full128 := i128Sent
 	err = stream.SerializeInt128(&full128,
 		Uint128From64(1).Lsh(127).Int128(),
 		Uint128From64(1).Lsh(127).Not().Int128())
 	checkOp(err, full128 == i128Sent)
 
+	// op 22: end
 	err = stream.SerializeEnd()
 	checkOp(err, true)
 
@@ -209,6 +241,8 @@ func runFuzzReadSentinel(t fuzzTB, data []byte, pattern byte, ctl fuzzControl) {
 	i32 = i32Sent
 	err = stream.SerializeInt(&i32, 0, 1)
 	checkOp(err, i32 == i32Sent)
+
+	return firstFailedIdx, firstRefusal
 }
 
 func checkFuzzReadStream(t fuzzTB, data []byte, ctl fuzzControl) {
@@ -239,26 +273,38 @@ func checkFuzzReadStream(t fuzzTB, data []byte, ctl fuzzControl) {
 	if stream.SerializeIntRelative(100, &relative) == nil {
 		fuzzCheck(t, "hostile", relative > 100, "int_relative(100) decoded %d", relative)
 	}
-	var str string
-	if stream.SerializeString(&str, 300) == nil {
-		fuzzCheck(t, "hostile", len(str) < 300 && utf8.ValidString(str) && strings.IndexByte(str, 0) < 0,
-			"accepted invalid string of len %d", len(str))
-	}
-	_ = stream.SerializeAlign()
-	buffer := make([]byte, 33)
-	_ = stream.SerializeBytes(buffer)
+	var u8 uint8
+	_ = stream.SerializeUint8(&u8)
+	var u16 uint16
+	_ = stream.SerializeUint16(&u16)
+	_ = stream.SerializeUint32(&u32)
+	_ = stream.SerializeUint64(&u64)
+	var flag bool
+	_ = stream.SerializeBool(&flag)
 	// floats off hostile bytes are finite or refused: the format carries no NaN
 	// and no infinity, whatever the bytes say
 	var f32 float32
-	if stream.SerializeCompressedFloat32(&f32, -1, 1, 0.001) == nil {
+	if stream.SerializeFloat32(&f32) == nil {
 		fuzzCheck(t, "hostile", float32BitsAreFinite(math.Float32bits(f32)),
-			"compressed float decoded a non-finite value: %#x", math.Float32bits(f32))
+			"float32 decoded a non-finite value: %#x", math.Float32bits(f32))
+	}
+	if stream.SerializeCompressedFloat32(&f32, -1, 1, 0.001) == nil {
+		fuzzCheck(t, "hostile", float32BitsAreFinite(math.Float32bits(f32)) && f32 >= -1.001 && f32 <= 1.001,
+			"compressed float decoded an invalid value: %v (%#x)", f32, math.Float32bits(f32))
 	}
 	var f64 float64
 	if stream.SerializeFloat64(&f64) == nil {
 		fuzzCheck(t, "hostile", float64BitsAreFinite(math.Float64bits(f64)),
 			"double decoded a non-finite value: %#x", math.Float64bits(f64))
 	}
+	_ = stream.SerializeAlign()
+	var str string
+	if stream.SerializeString(&str, 300) == nil {
+		fuzzCheck(t, "hostile", len(str) < 300 && utf8.ValidString(str) && strings.IndexByte(str, 0) < 0,
+			"accepted invalid string of len %d", len(str))
+	}
+	buffer := make([]byte, 33)
+	_ = stream.SerializeBytes(buffer)
 
 	// 128 bit and fixed point reads off hostile bytes must decode within their
 	// bounds or fail — never clamp, never wrap, never panic
@@ -313,8 +359,238 @@ func checkFuzzReadStream(t fuzzTB, data []byte, ctl fuzzControl) {
 	}
 
 	// Pass 2: two-sentinel destination preservation and post-refusal terminality
-	runFuzzReadSentinel(t, data, 0x5A, ctl)
-	runFuzzReadSentinel(t, data, 0xA5, ctl)
+	idxA, refA := runFuzzReadSentinel(t, data, 0x5A, ctl)
+	idxB, refB := runFuzzReadSentinel(t, data, 0xA5, ctl)
+	fuzzCheck(t, "sentinel", idxA == idxB && refA == refB,
+		"sentinel passes disagreed on refusal: 0x5A=(%d,%v) vs 0xA5=(%d,%v)", idxA, refA, idxB, refB)
+}
+
+// buildValidReadStreamPrefix writes the first stopBefore operations of the
+// checkFuzzReadStream / runFuzzReadSentinel sequence into ws using valid values.
+func buildValidReadStreamPrefix(ws *WriteStream, stopBefore int) {
+	for step := range stopBefore {
+		switch step {
+		case 0:
+			v := uint32(0x2A) // with step 1 low bit = 1, data[0] = 0xAA = 170, param%100 = 70
+			ws.SerializeBits(&v, 7)
+		case 1:
+			v := uint64(0x123456789)
+			ws.SerializeBits64(&v, 33)
+		case 2:
+			v := int32(42)
+			ws.SerializeInt(&v, -5, 100)
+		case 3:
+			v := int64(-123456789012345)
+			ws.SerializeInt64(&v, math.MinInt64, math.MaxInt64)
+		case 4:
+			v := int32(101) // difference = 1 -> 1 bit (0), bringing total to 112 bits (14 bytes, byte-aligned)
+			ws.SerializeIntRelative(100, &v)
+		case 5:
+			v := uint8(0x7F)
+			ws.SerializeUint8(&v)
+		case 6:
+			v := uint16(0xBEEF)
+			ws.SerializeUint16(&v)
+		case 7:
+			v := uint32(0xCAFEBABE)
+			ws.SerializeUint32(&v)
+		case 8:
+			v := uint64(0x0102030405060708)
+			ws.SerializeUint64(&v)
+		case 9:
+			v := true
+			ws.SerializeBool(&v)
+		case 10:
+			v := float32(1.25)
+			ws.SerializeFloat32(&v)
+		case 11:
+			v := float32(0.5)
+			ws.SerializeCompressedFloat32(&v, -1, 1, 0.001)
+		case 12:
+			v := float64(-2.75)
+			ws.SerializeFloat64(&v)
+		case 13:
+			ws.SerializeAlign()
+		case 14:
+			v := "hi"
+			ws.SerializeString(&v, 300)
+		case 15:
+			buf := bytes.Repeat([]byte{0x33}, 33)
+			ws.SerializeBytes(buf)
+		case 16:
+			v := Uint128{Lo: 11, Hi: 22}
+			ws.SerializeUint128(&v)
+		case 17:
+			v := int64(250 * 65536)
+			ws.SerializeFixed64(&v, 16, 16, -1000, +1000)
+		case 18:
+			v := int64(-500000 * 65536)
+			ws.SerializeFixed64(&v, 48, 16, -100000000000, +100000000000)
+		case 19:
+			v := Int128From64(1000).Lsh(16)
+			ws.SerializeFixed128(&v, 112, 16, -1152921504606846976, +1152921504606846976)
+		case 20:
+			bound128 := Int128From64(1).Lsh(90)
+			v := Int128From64(777)
+			ws.SerializeInt128(&v, bound128.Neg(), bound128)
+		case 21:
+			v := Int128From64(-999)
+			ws.SerializeInt128(&v,
+				Uint128From64(1).Lsh(127).Int128(),
+				Uint128From64(1).Lsh(127).Not().Int128())
+		case 22:
+			ws.SerializeEnd()
+		}
+	}
+}
+
+type fuzzReadFaultCase struct {
+	name    string
+	step    int
+	refusal Refusal
+	data    []byte
+}
+
+// buildFuzzReadStreamFaultCases builds valid-prefix + single-fault inputs so every
+// operation in checkFuzzReadStream / runFuzzReadSentinel is exercised as the FIRST
+// failing operation (plus the full valid packet that accepts all 23 steps).
+func buildFuzzReadStreamFaultCases() []fuzzReadFaultCase {
+	var cases []fuzzReadFaultCase
+
+	makeFault := func(name string, step int, refusal Refusal, inject func(ws *WriteStream)) {
+		buf := make([]byte, 512)
+		ws := NewWriteStream(buf)
+		buildValidReadStreamPrefix(ws, step)
+		inject(ws)
+		ws.Flush()
+		cases = append(cases, fuzzReadFaultCase{
+			name:    name,
+			step:    step,
+			refusal: refusal,
+			data:    append([]byte(nil), ws.Data()...),
+		})
+	}
+
+	// 1. Truncation (ErrPastEnd) at every bit-consuming step (all steps except 13=align and 22=end):
+	for step := range 22 {
+		if step == 4 || step == 13 {
+			continue
+		}
+		makeFault(fmt.Sprintf("step_%d_past_end", step), step, ErrPastEnd, func(ws *WriteStream) {})
+	}
+	// At step 4 (int_relative at bit 111), writing 1 bit (tag=1) reaches bit 112 (14 bytes) and then runs out of bits reading the second tag bit:
+	makeFault("step_4_past_end", 4, ErrPastEnd, func(ws *WriteStream) {
+		zero := uint32(0)
+		ws.SerializeBits(&zero, 1)
+	})
+
+	// 2. Semantic faults as the FIRST refusal at each step with a domain/format rule:
+	// step 2: int[-5, 100] (range 105 -> 7 bits; 120 > 105 -> ErrValueOutOfRange)
+	makeFault("step_2_int_out_of_range", 2, ErrValueOutOfRange, func(ws *WriteStream) {
+		raw := uint32(120)
+		ws.SerializeBits(&raw, 7)
+	})
+
+	// step 4: int_relative(100) non-canonical (4 tag bits 0xF selects 32-bit tier [281..MaxInt32], followed by diff=1 < 281 -> ErrNonCanonical)
+	makeFault("step_4_int_relative_non_canonical", 4, ErrNonCanonical, func(ws *WriteStream) {
+		prefix := uint32(0xF)
+		ws.SerializeBits(&prefix, 4)
+		diff := uint32(1)
+		ws.SerializeBits(&diff, 32)
+	})
+
+	// step 10: float32 NaN (0x7FC00000 -> ErrNonFiniteFloat)
+	makeFault("step_10_float32_nan", 10, ErrNonFiniteFloat, func(ws *WriteStream) {
+		nanBits := uint32(0x7FC00000)
+		ws.SerializeUint32(&nanBits)
+	})
+
+	// step 11: compressed_float32 [-1, 1, 0.001] (maxIntegerValue=2000, 11 bits; 2047 > 2000 -> ErrValueOutOfRange)
+	makeFault("step_11_compressed_float32_out_of_range", 11, ErrValueOutOfRange, func(ws *WriteStream) {
+		raw := uint32(2047)
+		ws.SerializeBits(&raw, 11)
+	})
+
+	// step 12: float64 +Inf (0x7FF0000000000000 -> ErrNonFiniteFloat)
+	makeFault("step_12_float64_inf", 12, ErrNonFiniteFloat, func(ws *WriteStream) {
+		infBits := uint64(0x7FF0000000000000)
+		ws.SerializeUint64(&infBits)
+	})
+
+	// step 13: align at bit 340 (4 padding bits; writing 1 -> ErrNonzeroPadding)
+	makeFault("step_13_align_nonzero_padding", 13, ErrNonzeroPadding, func(ws *WriteStream) {
+		one := uint32(1)
+		ws.SerializeBits(&one, 4)
+	})
+
+	// step 14: string(300) invalid UTF-8 (len=1, byte 0xFF -> ErrInvalidUTF8)
+	makeFault("step_14_string_invalid_utf8", 14, ErrInvalidUTF8, func(ws *WriteStream) {
+		var length int32 = 1
+		ws.SerializeInt(&length, 0, 299)
+		ws.SerializeAlign()
+		bad := uint8(0xFF)
+		ws.SerializeUint8(&bad)
+	})
+
+	// step 14: string(300) embedded NUL (len=1, byte 0x00 -> ErrEmbeddedNul)
+	makeFault("step_14_string_embedded_nul", 14, ErrEmbeddedNul, func(ws *WriteStream) {
+		var length int32 = 1
+		ws.SerializeInt(&length, 0, 299)
+		ws.SerializeAlign()
+		nul := uint8(0x00)
+		ws.SerializeUint8(&nul)
+	})
+
+	// step 17: fixed64 Q16.16 [-1000, +1000] (range = 2000*65536 = 131072000, 27 bits; all-ones 0x7FFFFFF > 131072000 -> ErrValueOutOfRange)
+	makeFault("step_17_fixed64_q16_16_out_of_range", 17, ErrValueOutOfRange, func(ws *WriteStream) {
+		raw := uint32(0x7FFFFFF)
+		ws.SerializeBits(&raw, 27)
+	})
+
+	// step 18: fixed64 Q48.16 [-1e11, +1e11] (54 bits; all-ones (1<<54)-1 > range -> ErrValueOutOfRange)
+	makeFault("step_18_fixed64_q48_16_out_of_range", 18, ErrValueOutOfRange, func(ws *WriteStream) {
+		raw := (uint64(1) << 54) - 1
+		ws.SerializeBits64(&raw, 54)
+	})
+
+	// step 19: fixed128 Q112.16 [-2^60, +2^60] (range = 2^77, 78 bits -> 64 low bits + 14 high bits; all-ones -> ErrValueOutOfRange)
+	makeFault("step_19_fixed128_q112_16_out_of_range", 19, ErrValueOutOfRange, func(ws *WriteStream) {
+		lo := ^uint64(0)
+		hi := uint32((1 << 14) - 1)
+		ws.SerializeBits64(&lo, 64)
+		ws.SerializeBits(&hi, 14)
+	})
+
+	// step 20: int128 ranged [-2^90, +2^90] (range = 2^91, 92 bits -> 64 low bits + 28 high bits; all-ones -> ErrValueOutOfRange)
+	makeFault("step_20_int128_ranged_out_of_range", 20, ErrValueOutOfRange, func(ws *WriteStream) {
+		lo := ^uint64(0)
+		hi := uint32((1 << 28) - 1)
+		ws.SerializeBits64(&lo, 64)
+		ws.SerializeBits(&hi, 28)
+	})
+
+	// step 22: end with nonzero padding (after step 21, bit position is unaligned; write 1 in padding bit -> ErrNonzeroPadding)
+	makeFault("step_22_end_nonzero_padding", 22, ErrNonzeroPadding, func(ws *WriteStream) {
+		one := uint32(1)
+		ws.SerializeBits(&one, 1)
+	})
+
+	// step 22: end with trailing byte (valid prefix through step 22, plus 1 extra zero byte -> ErrTrailingData)
+	{
+		buf := make([]byte, 512)
+		ws := NewWriteStream(buf)
+		buildValidReadStreamPrefix(ws, 23)
+		ws.Flush()
+		trailing := append(append([]byte(nil), ws.Data()...), 0x00)
+		cases = append(cases, fuzzReadFaultCase{
+			name:    "step_22_end_trailing_data",
+			step:    22,
+			refusal: ErrTrailingData,
+			data:    trailing,
+		})
+	}
+
+	return cases
 }
 
 // FuzzReadStream feeds arbitrary bytes to a read stream and exercises every serialize
@@ -325,6 +601,14 @@ func FuzzReadStream(f *testing.F) {
 	f.Add([]byte{0xFF})
 	f.Add(bytes.Repeat([]byte{0xFF}, 64))
 	f.Add(goldenWireBytes)
+	validBuf := make([]byte, 512)
+	validWS := NewWriteStream(validBuf)
+	buildValidReadStreamPrefix(validWS, fuzzReadSeqNumOps)
+	validWS.Flush()
+	f.Add(append([]byte(nil), validWS.Data()...))
+	for _, fc := range buildFuzzReadStreamFaultCases() {
+		f.Add(fc.data)
+	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		checkFuzzReadStream(t, data, fuzzControlNone)
@@ -414,9 +698,11 @@ func checkFuzzRoundTrip(t fuzzTB, a uint32, aBits uint8, b uint64, bBits uint8, 
 	if min64 > max64 {
 		min64, max64 = max64, min64
 	}
-	value64 := min64 + int64((uint64(c)*0x9E3779B97F4A7C15)%(uint64(max64-min64)+1))
+	var value64 int64
 	if uint64(max64-min64) == math.MaxUint64 {
 		value64 = int64(b ^ uint64(d))
+	} else {
+		value64 = min64 + int64((uint64(c)*0x9E3779B97F4A7C15)%(uint64(max64-min64)+1))
 	}
 	u8, u16, u32, u64 := uint8(a), uint16(b), uint32(d), b^0xC2B2AE3D27D4EB4F
 	previous := c & math.MaxInt32
@@ -629,6 +915,7 @@ func checkFuzzRoundTrip(t fuzzTB, a uint32, aBits uint8, b uint64, bBits uint8, 
 // trip exactly.
 func FuzzRoundTrip(f *testing.F) {
 	f.Add(uint32(0), uint8(0), uint64(0), uint8(0), int32(0), int32(0), "", []byte{}, false, float32(0), 0.0)
+	f.Add(^uint32(0), uint8(0), uint64(1)<<63, uint8(0), int32(0), int32(0), "", []byte{}, false, float32(0), 0.0)
 	f.Add(uint32(0xDEADBEEF), uint8(31), uint64(0x123456789ABCDEF0), uint8(63), int32(-1000), int32(1000),
 		"hello world", []byte{1, 2, 3}, true, float32(3.14159), 1.0/3.0)
 
@@ -672,6 +959,15 @@ func runFuzzReplay(tb fuzzTB, count int, ctl fuzzControl) {
 	checkFuzzReadStream(tb, []byte{0xFF}, ctl)
 	checkFuzzReadStream(tb, bytes.Repeat([]byte{0xFF}, 64), ctl)
 	checkFuzzReadStream(tb, goldenWireBytes, ctl)
+	validBuf := make([]byte, 512)
+	validWS := NewWriteStream(validBuf)
+	buildValidReadStreamPrefix(validWS, fuzzReadSeqNumOps)
+	validWS.Flush()
+	checkFuzzReadStream(tb, validWS.Data(), ctl)
+	for _, fc := range buildFuzzReadStreamFaultCases() {
+		checkFuzzReadStream(tb, fc.data, ctl)
+	}
+	checkFuzzRoundTrip(tb, ^uint32(0), 0, uint64(1)<<63, 0, 0, 0, "", nil, false, 0, 0, ctl)
 
 	for n := range count {
 		length := 1 + int(next()%256)
@@ -717,6 +1013,44 @@ func runFuzzReplay(tb fuzzTB, count int, ctl fuzzControl) {
 			f64 = math.Float64frombits(binary.LittleEndian.Uint64(buf[:8]) & 0x800FFFFFFFFFFFFF)
 		}
 		checkFuzzRoundTrip(tb, a, aBits, b, bBits, c, d, string(strBytes), bulk, flag, f32, f64, ctl)
+	}
+}
+
+// TestFuzzRoundTripFullRangeInt64 verifies that checkFuzzRoundTrip handles the
+// full 64-bit signed range [math.MinInt64, math.MaxInt64] without wrapping
+// uint64(max64-min64)+1 to zero.
+func TestFuzzRoundTripFullRangeInt64(t *testing.T) {
+	checkFuzzRoundTrip(t, ^uint32(0), 0, uint64(1)<<63, 0, 0, 0, "", nil, false, 0, 0, fuzzControlNone)
+}
+
+// TestFuzzReadFirstFailureCoverage verifies that the valid-prefix + single-fault
+// corpus exercises every operation 0..fuzzReadSeqNumOps-1 as the FIRST failing
+// operation (plus the full valid sequence that accepts all 23 operations).
+func TestFuzzReadFirstFailureCoverage(t *testing.T) {
+	validBuf := make([]byte, 512)
+	validWS := NewWriteStream(validBuf)
+	buildValidReadStreamPrefix(validWS, fuzzReadSeqNumOps)
+	validWS.Flush()
+	idxA, _ := runFuzzReadSentinel(t, validWS.Data(), 0x5A, fuzzControlNone)
+	idxB, _ := runFuzzReadSentinel(t, validWS.Data(), 0xA5, fuzzControlNone)
+	if idxA != fuzzReadSeqNumOps || idxB != fuzzReadSeqNumOps {
+		t.Fatalf("valid packet refused early at step %d / %d", idxA, idxB)
+	}
+
+	coveredSteps := make([]bool, fuzzReadSeqNumOps)
+	for _, fc := range buildFuzzReadStreamFaultCases() {
+		gotIdx, gotRefusal := runFuzzReadSentinel(t, fc.data, 0x5A, fuzzControlNone)
+		gotIdxB, gotRefusalB := runFuzzReadSentinel(t, fc.data, 0xA5, fuzzControlNone)
+		if gotIdx != fc.step || gotRefusal != fc.refusal || gotIdxB != fc.step || gotRefusalB != fc.refusal {
+			t.Fatalf("fault case %s: want step=%d refusal=%v, got 0x5A=(%d,%v) 0xA5=(%d,%v)",
+				fc.name, fc.step, fc.refusal, gotIdx, gotRefusal, gotIdxB, gotRefusalB)
+		}
+		coveredSteps[fc.step] = true
+	}
+	for step, ok := range coveredSteps {
+		if !ok {
+			t.Fatalf("operation step %d was never exercised as the first failing operation", step)
+		}
 	}
 }
 
