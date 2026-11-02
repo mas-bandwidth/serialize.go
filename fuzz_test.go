@@ -491,12 +491,19 @@ func buildFuzzReadStreamFaultCases() []fuzzReadFaultCase {
 		ws.SerializeBits(&raw, 7)
 	})
 
-	// step 4: int_relative(100) non-canonical (4 tag bits 0xF selects 32-bit tier [281..MaxInt32], followed by diff=1 < 281 -> ErrNonCanonical)
+	// step 4: int_relative(100) non-canonical (7 zero tag bits select the 32-bit absolute tier, followed by absolute=101 -> ErrNonCanonical)
 	makeFault("step_4_int_relative_non_canonical", 4, ErrNonCanonical, func(ws *WriteStream) {
 		prefix := uint32(0)
-		ws.SerializeBits(&prefix, 4)
-		diff := uint32(1)
-		ws.SerializeBits(&diff, 32)
+		ws.SerializeBits(&prefix, 7)
+		absVal := uint32(101)
+		ws.SerializeBits(&absVal, 32)
+	})
+	// step 4: int_relative(100) out of range (7 zero tag bits select the 32-bit absolute tier, followed by absolute=50 <= previous -> ErrValueOutOfRange)
+	makeFault("step_4_int_relative_out_of_range", 4, ErrValueOutOfRange, func(ws *WriteStream) {
+		prefix := uint32(0)
+		ws.SerializeBits(&prefix, 7)
+		absVal := uint32(50)
+		ws.SerializeBits(&absVal, 32)
 	})
 
 	// step 10: float32 NaN (0x7FC00000 -> ErrNonFiniteFloat)
