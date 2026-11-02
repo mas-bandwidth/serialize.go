@@ -493,7 +493,7 @@ func buildFuzzReadStreamFaultCases() []fuzzReadFaultCase {
 
 	// step 4: int_relative(100) non-canonical (4 tag bits 0xF selects 32-bit tier [281..MaxInt32], followed by diff=1 < 281 -> ErrNonCanonical)
 	makeFault("step_4_int_relative_non_canonical", 4, ErrNonCanonical, func(ws *WriteStream) {
-		prefix := uint32(0xF)
+		prefix := uint32(0)
 		ws.SerializeBits(&prefix, 4)
 		diff := uint32(1)
 		ws.SerializeBits(&diff, 32)
