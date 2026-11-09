@@ -271,12 +271,8 @@ func NewBitReader(data []byte) *BitReader {
 // degenerate min==max range) reaches readBits64 with byteIndex == len(data), so the
 // widest window a legal read can ask for needs len+12 <= cap.
 //
-// The cost of that threshold, stated because it is the one user-visible change: a buffer
-// with 7 to 11 bytes of slack now takes the tail path where it previously did not, which
-// costs one predictable branch per read AND a fillTail copy on every Reset (measured
-// 0.61 -> 3.51 ns). Arena-sliced buffers — the documented shape — have ample slack and
-// are unaffected; the band is reached by make([]byte, n) where n falls just under a size
-// class (n = 41..47 giving cap 48, n = 1017 giving cap 1024).
+// Slack is determined by the supplied slice capacity, not its allocation size.
+// A full slice expression data[:len(data):len(data)] forces the tail path.
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
 	r.padded = data[:cap(data)]
@@ -300,13 +296,10 @@ func (r *BitReader) fillTail() {
 
 // tryReadBits bounds checks and reads bits that have already been validated to [1,32],
 // reporting false if the read would go past the end of the buffer. It exists so stream
-// wrappers can fuse the bounds check and the window load into their own bodies: both
-// this and readBits stay within the compiler's inlining budget.
+// wrappers can inline the bounds check and window load into their own bodies.
 //
-// MEASURED go1.27.0, budget 80: readBits costs 64, this costs EXACTLY 80. This body is
-// one unit from falling out of inline, and nothing goes red when it does — the code
-// keeps working and every caller silently pays a call. Any edit here re-measures with
-// `go build -gcflags=-m -m` before landing.
+// Inlining decisions depend on the compiler and build flags; inspect compiler
+// diagnostics when changing this hot path.
 func (r *BitReader) tryReadBits(bits int) (uint32, bool) {
 	if r.bitsRead+int64(bits) > r.numBits {
 		return 0, false
