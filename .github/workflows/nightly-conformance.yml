@@ -45,9 +45,8 @@ permissions:
 jobs:
   conformance:
     name: port against upstream C/C++ conformance data
-    # OUR FLEET, never GitHub's machines. Never the `space` label: that is the
-    # XDP machine. Toolchains are installed inside the job by pinned setup
-    # actions, so no machine's global state changes.
+    # Use self-hosted nightly runners. Toolchains are installed inside the job
+    # by pinned setup actions, so no machine's global state changes.
     runs-on: [self-hosted, Linux, X64, nightly]
     timeout-minutes: 60
     env:

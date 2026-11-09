@@ -138,8 +138,8 @@ func FuzzRoundTrip(f *testing.F) {
 		}
 
 		// the round trip serializes str with SerializeString, whose payload is
-		// well-formed UTF-8 without interior NUL — the writer's contract, and since
-		// the reader-validation ruling refused on read. The fuzzer explores arbitrary
+		// well-formed UTF-8 without interior NUL, as required by both the writer
+		// and reader. The fuzzer explores arbitrary
 		// bytes, so canonicalize to a conforming payload here: contract-violating
 		// writes are undefined by STANDARD.md and arbitrary bytes belong to
 		// SerializeBytes, which this harness fuzzes via bulk.
@@ -193,8 +193,8 @@ func FuzzRoundTrip(f *testing.F) {
 		expectedInt128 := int128Bound.Neg().Add(
 			Uint128{Lo: b ^ 0xA0761D6478BD642F, Hi: uint64(a)}.Mod(int128Bound.Uint128().Lsh(1).Add(Uint128From64(1))).Int128())
 
-		// the operations the first harness missed (audit ledger, go L5), derived from the
-		// same arguments: int64 over a fuzzed range, the fixed width unsigned integers,
+		// Additional operations derived from the same arguments: int64 over a fuzzed
+		// range, the fixed width unsigned integers,
 		// degenerate ranges at 32 and 64 bits, int_relative across every tier, and a
 		// compressed float over a fixed declaration
 		min64, max64 := int64(b), int64(b)^int64(a64(a))

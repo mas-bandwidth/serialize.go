@@ -28,8 +28,7 @@ import (
 // What that buys, stated as measured rather than as intent (go1.27.0, budget 80):
 // tryWriteBits costs 64 and inlines, so a caller that packs directly pays no call.
 // The per-field entry point writeBits wraps it with the past-end trap. ReadStream.readBits
-// is outlined at 106. Closing that gap is a live question (mas-bandwidth/schema#170's
-// B1); nothing here should be read as claiming it is already closed.
+// is outlined at 106, so the reader still incurs a call.
 //
 // The zero value is not usable: create a WriteStream with NewWriteStream, or Reset one
 // onto a buffer before use.
@@ -340,12 +339,9 @@ func (s *WriteStream) SerializeFloat64(value *float64) error {
 
 // SerializeCompressedFloat32 quantizes *value into [min,max] at the given resolution and
 // writes only the bits required for the quantized range. It derives the wire constants
-// with CompressedFloatParams, then runs the one audited home of the write-side
-// quantization arithmetic: the two functions are the pre-split body, split at the line
-// schema issue mas-bandwidth/schema#82 names — everything that depends only on the
-// declaration lives in CompressedFloatParams, everything that touches the value or the
-// wire lives in compressedFloat32Precomputed, statement for statement — the same home
-// SerializeCompressedFloat32Precomputed reaches.
+// with CompressedFloatParams. Declaration-only calculations live there; value and wire
+// operations live in compressedFloat32Precomputed, shared with
+// SerializeCompressedFloat32Precomputed.
 // TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
 // identity against a frozen copy of the original unsplit implementation.
 func (s *WriteStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
@@ -402,8 +398,7 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 	// agrees, so CI on x86 stays green while Apple Silicon emits different
 	// bytes. Do not "simplify" this.
 	integerValue := uint32(math.Floor(float64(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)))
-	// STANDARD.md: the integer clamp is normative (2026-08-23, schema#109; the C++
-	// C++ implementation merged it in mas-bandwidth/serialize#88). Once maxIntegerValue >= 2^23
+	// STANDARD.md requires the integer clamp. Once maxIntegerValue >= 2^23
 	// the float32 ulp at the top of the range reaches 1, so the rounded sum can exceed
 	// maxIntegerValue itself: the writer emits a code its own reader rejects, or one
 	// bit wider than the field. Clamping after the floor closes both and changes no

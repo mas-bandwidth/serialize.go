@@ -302,9 +302,9 @@ func TestU10WholeOperationRoom(t *testing.T) {
 	}
 }
 
-// TestCompressedFloatDecodeIsMinPlusDelta pins the read contract the doc now states
-// (audit ledger, go M1): a successful read lies in [min, min + delta], where delta is
-// max - min rounded in float32, and that can exceed max. Over [-1, 16777218] at
+// TestCompressedFloatDecodeIsMinPlusDelta checks that a successful read lies in
+// [min, min + delta], where delta is max - min rounded in float32, and that can
+// exceed max. Over [-1, 16777218] at
 // resolution 1, delta rounds up to 16777220 and the top integer decodes to 16777219
 // rounded, 16777220, above max. The decode is the STANDARD.md arithmetic and is
 // correct; the 2.1 vector compressed-float-top-integer-decodes-above-max-by-delta-rounding
