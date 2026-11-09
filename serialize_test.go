@@ -3,6 +3,7 @@ package serialize
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -1063,7 +1064,7 @@ func TestGoldenWireFormat(t *testing.T) {
 
 func TestUnalignedWriter(t *testing.T) {
 	// buffers do not need any particular alignment: exercise every offset within a qword,
-	// covering the WriteBits, WriteBytes and FlushBits store paths
+	// covering the WriteStream SerializeBits, SerializeBytes, and Flush store paths
 	storage := make([]byte, 256+8)
 
 	for offset := range 8 {
@@ -1869,4 +1870,241 @@ func TestReadStreamSharedArenaThreeIndexSlice(t *testing.T) {
 	if lo != 0x0807060504030201 || hi != 0x100f0e0d0c0b0a09 {
 		t.Fatalf("read %#x %#x", lo, hi)
 	}
+}
+
+// prefixChunk is the value written at bitPos for the next n bits of the direct sweep.
+// BitWriter and WriteStream both write these chunks, so the packets can be compared
+// byte for byte.
+func prefixChunk(bitPos, n int) uint32 {
+	var v uint32
+	for i := range n {
+		if (bitPos+i)%5 != 0 {
+			v |= 1 << i
+		}
+	}
+	return v
+}
+
+func writePrefixDirect(w *BitWriter, bits int) {
+	for pos := 0; pos < bits; {
+		n := bits - pos
+		if n > 32 {
+			n = 32
+		}
+		w.WriteBits(prefixChunk(pos, n), n)
+		pos += n
+	}
+}
+
+func writePrefixStream(s *WriteStream, bits int) error {
+	for pos := 0; pos < bits; {
+		n := bits - pos
+		if n > 32 {
+			n = 32
+		}
+		v := prefixChunk(pos, n)
+		if err := s.SerializeBits(&v, n); err != nil {
+			return err
+		}
+		pos += n
+	}
+	return nil
+}
+
+func readPrefixDirect(r *BitReader, bits int) error {
+	for pos := 0; pos < bits; {
+		n := bits - pos
+		if n > 32 {
+			n = 32
+		}
+		if got, want := r.ReadBits(n), prefixChunk(pos, n); got != want {
+			return fmt.Errorf("bit reader prefix at %d: got %#x want %#x", pos, got, want)
+		}
+		pos += n
+	}
+	return nil
+}
+
+func readPrefixStream(s *ReadStream, bits int) error {
+	for pos := 0; pos < bits; {
+		n := bits - pos
+		if n > 32 {
+			n = 32
+		}
+		var got uint32
+		if err := s.SerializeBits(&got, n); err != nil {
+			return err
+		}
+		if want := prefixChunk(pos, n); got != want {
+			return fmt.Errorf("read stream prefix at %d: got %#x want %#x", pos, got, want)
+		}
+		pos += n
+	}
+	return nil
+}
+
+// TestBitPackerDirectSweep drives BitWriter and BitReader across prefix lengths and
+// byte payloads, and checks that the bytes match WriteStream and ReadStream.
+func TestBitPackerDirectSweep(t *testing.T) {
+	const bufferSize = 128
+	capBits := int64(bufferSize) * 8
+	directBuf := make([]byte, bufferSize)
+	streamBuf := make([]byte, bufferSize)
+
+	writer := NewBitWriter(directBuf)
+	if writer.BitsWritten() != 0 || writer.BytesWritten() != 0 || writer.BitsAvailable() != capBits {
+		t.Fatal("bad state from NewBitWriter")
+	}
+
+	for prefix := 0; prefix <= 70; prefix++ {
+		for nbytes := 0; nbytes <= 40; nbytes++ {
+			payload := make([]byte, nbytes)
+			for i := range payload {
+				payload[i] = byte(prefix*3 + i*17 + 1)
+			}
+
+			clear(directBuf)
+			clear(streamBuf)
+			writer.Reset(directBuf)
+			writer.WriteBits(^uint32(0)>>(32-17), 17)
+			writer.Reset(directBuf)
+			if writer.BitsWritten() != 0 || writer.BytesWritten() != 0 || writer.BitsAvailable() != capBits {
+				t.Fatalf("prefix %d bytes %d: Reset did not clear the writer", prefix, nbytes)
+			}
+
+			writePrefixDirect(writer, prefix)
+			if writer.BitsWritten() != int64(prefix) || writer.BitsAvailable() != capBits-int64(prefix) {
+				t.Fatalf("prefix %d bytes %d: after prefix bits=%d available=%d", prefix, nbytes, writer.BitsWritten(), writer.BitsAvailable())
+			}
+
+			writer.WriteAlign()
+			align := (8 - prefix%8) % 8
+			afterAlign := int64(prefix + align)
+			if writer.BitsWritten() != afterAlign || writer.BitsAvailable() != capBits-afterAlign {
+				t.Fatalf("prefix %d bytes %d: after WriteAlign bits=%d available=%d", prefix, nbytes, writer.BitsWritten(), writer.BitsAvailable())
+			}
+
+			writer.WriteBytes(payload)
+			expectBits := afterAlign + int64(nbytes)*8
+			expectBytes := (expectBits + 7) / 8
+			if writer.BitsWritten() != expectBits || writer.BytesWritten() != expectBytes || writer.BitsAvailable() != capBits-expectBits {
+				t.Fatalf("prefix %d bytes %d: after WriteBytes bits=%d bytes=%d available=%d", prefix, nbytes, writer.BitsWritten(), writer.BytesWritten(), writer.BitsAvailable())
+			}
+
+			writer.FlushBits()
+			if writer.BitsWritten() != expectBits || writer.BytesWritten() != expectBytes {
+				t.Fatalf("prefix %d bytes %d: FlushBits changed the counters", prefix, nbytes)
+			}
+			packet := writer.Data()
+			if int64(len(packet)) != writer.BytesWritten() {
+				t.Fatalf("prefix %d bytes %d: Data length %d, BytesWritten %d", prefix, nbytes, len(packet), writer.BytesWritten())
+			}
+
+			stream := NewWriteStream(streamBuf)
+			if err := writePrefixStream(stream, prefix); err != nil {
+				t.Fatalf("prefix %d bytes %d: stream prefix: %v", prefix, nbytes, err)
+			}
+			if err := stream.SerializeAlign(); err != nil {
+				t.Fatalf("prefix %d bytes %d: stream align: %v", prefix, nbytes, err)
+			}
+			if err := stream.SerializeBytes(payload); err != nil {
+				t.Fatalf("prefix %d bytes %d: stream bytes: %v", prefix, nbytes, err)
+			}
+			stream.Flush()
+			if stream.BitsProcessed() != expectBits || stream.BytesProcessed() != expectBytes {
+				t.Fatalf("prefix %d bytes %d: stream bits=%d bytes=%d", prefix, nbytes, stream.BitsProcessed(), stream.BytesProcessed())
+			}
+			if !bytes.Equal(packet, stream.Data()) {
+				t.Fatalf("prefix %d bytes %d: packet mismatch\n direct %x\n stream %x", prefix, nbytes, packet, stream.Data())
+			}
+			if !bytes.Equal(directBuf, streamBuf) {
+				t.Fatalf("prefix %d bytes %d: buffer mismatch\n direct %x\n stream %x", prefix, nbytes, directBuf, streamBuf)
+			}
+
+			exact := packet[:len(packet):len(packet)]
+			slackStore := make([]byte, len(packet)+16)
+			copy(slackStore, packet)
+			slack := slackStore[:len(packet)]
+			for _, shape := range []struct {
+				name string
+				data []byte
+			}{
+				{name: "exact", data: exact},
+				{name: "slack", data: slack},
+			} {
+				reader := NewBitReader(shape.data)
+				if err := checkDirectRead(reader, prefix, payload, expectBits); err != nil {
+					t.Fatalf("prefix %d bytes %d: %s: %v", prefix, nbytes, shape.name, err)
+				}
+				reader.Reset(shape.data)
+				if err := checkDirectRead(reader, prefix, payload, expectBits); err != nil {
+					t.Fatalf("prefix %d bytes %d: %s after Reset: %v", prefix, nbytes, shape.name, err)
+				}
+			}
+
+			readStream := NewReadStream(exact)
+			if err := checkStreamRead(readStream, prefix, payload, expectBits, expectBytes); err != nil {
+				t.Fatalf("prefix %d bytes %d: read stream: %v", prefix, nbytes, err)
+			}
+			readStream.Reset(exact)
+			if err := checkStreamRead(readStream, prefix, payload, expectBits, expectBytes); err != nil {
+				t.Fatalf("prefix %d bytes %d: read stream after Reset: %v", prefix, nbytes, err)
+			}
+		}
+	}
+}
+
+func checkDirectRead(reader *BitReader, prefix int, payload []byte, expectBits int64) error {
+	if reader.BitsRead() != 0 {
+		return fmt.Errorf("reader BitsRead %d, want 0", reader.BitsRead())
+	}
+	if err := readPrefixDirect(reader, prefix); err != nil {
+		return err
+	}
+	if !reader.ReadAlign() {
+		return errors.New("ReadAlign rejected zero padding")
+	}
+	got := make([]byte, len(payload))
+	reader.ReadBytes(got)
+	if !bytes.Equal(got, payload) {
+		return fmt.Errorf("ReadBytes got %x want %x", got, payload)
+	}
+	if reader.BitsRead() != expectBits {
+		return fmt.Errorf("BitsRead %d, want %d", reader.BitsRead(), expectBits)
+	}
+	remain := reader.BitsRemaining()
+	if remain != 0 {
+		return fmt.Errorf("BitsRemaining %d, want 0", remain)
+	}
+	// WouldReadPastEnd is the overflow check: the bits still in the packet fit, and one more does not.
+	if reader.WouldReadPastEnd(int(remain)) {
+		return errors.New("overflow check rejected the remaining bits")
+	}
+	if !reader.WouldReadPastEnd(int(remain) + 1) {
+		return errors.New("overflow check accepted a bit past the end")
+	}
+	return nil
+}
+
+func checkStreamRead(stream *ReadStream, prefix int, payload []byte, expectBits, expectBytes int64) error {
+	if stream.BitsProcessed() != 0 {
+		return fmt.Errorf("read stream BitsProcessed %d, want 0", stream.BitsProcessed())
+	}
+	if err := readPrefixStream(stream, prefix); err != nil {
+		return err
+	}
+	if err := stream.SerializeAlign(); err != nil {
+		return err
+	}
+	got := make([]byte, len(payload))
+	if err := stream.SerializeBytes(got); err != nil {
+		return err
+	}
+	if !bytes.Equal(got, payload) {
+		return fmt.Errorf("SerializeBytes got %x want %x", got, payload)
+	}
+	if stream.BitsProcessed() != expectBits || stream.BytesProcessed() != expectBytes {
+		return fmt.Errorf("read stream bits %d bytes %d, want %d %d", stream.BitsProcessed(), stream.BytesProcessed(), expectBits, expectBytes)
+	}
+	return nil
 }
