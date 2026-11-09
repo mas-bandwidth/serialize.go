@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The uniform behaviour rules, IMPLEMENTING.md U1 to U16 (reference v2.1.0), and the
+// The uniform behaviour rules, IMPLEMENTING.md U1 to U16 (reference v2.1.2), and the
 // writer check model they enforce. None of these is a corpus vector: each is
 // write-side, measure-side or caller-misuse behaviour, which no stream observes. Each
 // test names the rule it holds.
@@ -49,6 +49,14 @@ func TestU7ReadDeclarationMisuseRefuses(t *testing.T) {
 		"cf resolution NaN": func(r *ReadStream) error {
 			v := float32(7)
 			return r.SerializeCompressedFloat32(&v, 0, 1, float32(math.NaN()))
+		},
+		"cf delta not finite": func(r *ReadStream) error {
+			v := float32(7)
+			return r.SerializeCompressedFloat32(&v, -3e38, 3e38, 1)
+		},
+		"cf values not finite": func(r *ReadStream) error {
+			v := float32(7)
+			return r.SerializeCompressedFloat32(&v, 0, 1e30, 1e-30)
 		},
 		"precomputed bits": func(r *ReadStream) error {
 			v := float32(7)
@@ -102,6 +110,41 @@ func TestU7ReadDeclarationMisuseLeavesValue(t *testing.T) {
 	_ = r.SerializeString(&s, 0)
 	if v != 7 || s != "keep" {
 		t.Fatalf("a refused declaration wrote the destination: %d %q", v, s)
+	}
+}
+
+// TestU7ReadCompressedFloatDeclarationRefusedBeforeReading holds the timing half of U7
+// on compressed_float: a declaration whose delta or delta / resolution is not finite in
+// float32 is refused before any bits are read, so a short or empty stream reports the
+// declaration's reason, value_out_of_range, not past_end.
+func TestU7ReadCompressedFloatDeclarationRefusedBeforeReading(t *testing.T) {
+	declarations := map[string][3]float32{
+		"delta not finite":  {-3e38, 3e38, 1},
+		"values not finite": {0, 1e30, 1e-30},
+	}
+	buffers := map[string][]byte{
+		"four bytes": {0x78, 0x56, 0x34, 0x12},
+		"empty":      nil,
+	}
+	for declName, declaration := range declarations {
+		for bufName, data := range buffers {
+			t.Run(declName+"/"+bufName, func(t *testing.T) {
+				v := float32(7)
+				r := NewReadStream(data)
+				if panics(func() { _ = r.SerializeCompressedFloat32(&v, declaration[0], declaration[1], declaration[2]) }) {
+					t.Fatalf("a bad declaration on read panicked; U7 requires a refusal")
+				}
+				if !errors.Is(r.Err(), ErrValueOutOfRange) {
+					t.Fatalf("got %v, want value_out_of_range", r.Err())
+				}
+				if r.BitsProcessed() != 0 {
+					t.Fatalf("read %d bits before refusing the declaration", r.BitsProcessed())
+				}
+				if v != 7 {
+					t.Fatalf("a refused declaration wrote the destination: %v", v)
+				}
+			})
+		}
 	}
 }
 

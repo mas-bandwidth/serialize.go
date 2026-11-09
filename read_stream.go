@@ -344,6 +344,15 @@ func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolu
 		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	maxIntegerValue, bits, delta := compressedFloatParams(min, max, resolution)
+	// A declaration whose delta or delta / resolution is not finite in float32 has no
+	// derivable wire constants: refuse it before reading any bits, exactly where the
+	// write and measure streams' check model panics. The check is here rather than in
+	// compressedFloatDeclarationValid so that CompressedFloatParams keeps deriving the
+	// constants it can: only the read stream has a stream state to refuse.
+	if !float32BitsAreFinite(math.Float32bits(delta)) ||
+		!float32BitsAreFinite(math.Float32bits(delta/resolution)) {
+		return s.fail(ErrValueOutOfRange) // a non-finite declaration (U7, U16); fail keeps a first reason
+	}
 	// no validation on this path: the constants come straight out of
 	// CompressedFloatParams, so they are correct by construction. Only constants
 	// supplied by a caller can be wrong, and those enter through the exported
