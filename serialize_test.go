@@ -9,6 +9,28 @@ import (
 	"testing"
 )
 
+func TestBitWriterWriteAfterFlushPanics(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		write func(*BitWriter)
+	}{
+		{"bits", func(w *BitWriter) { w.WriteBits(0xCD, 8) }},
+		{"bytes", func(w *BitWriter) { w.WriteBytes([]byte{0xCD}) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := NewBitWriter(make([]byte, 16))
+			writer.WriteBits(0xAB, 8)
+			writer.FlushBits()
+			defer func() {
+				if got := recover(); got != "serialize: write after flush" {
+					t.Fatalf("panic = %v, want serialize: write after flush", got)
+				}
+			}()
+			test.write(writer)
+		})
+	}
+}
+
 func TestBitpacker(t *testing.T) {
 	const bufferSize = 256
 

@@ -84,6 +84,9 @@ func (w *BitWriter) writeBits(value uint32, bits int) {
 // IMPORTANT: When you have finished writing, call FlushBits, otherwise the last word of
 // data will not get flushed to memory!
 func (w *BitWriter) WriteBits(value uint32, bits int) {
+	if int64(w.scratchBits) != w.bitsWritten%64 {
+		panic("serialize: write after flush")
+	}
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
 	}
@@ -112,6 +115,9 @@ func (w *BitWriter) WriteAlign() {
 // byte boundary. Head bytes are bitpacked until the stream reaches a qword boundary, the
 // middle is a straight copy, and the tail is bitpacked again.
 func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
+	if int64(w.scratchBits) != w.bitsWritten%64 {
+		panic("serialize: write after flush")
+	}
 	if w.bitsWritten%8 != 0 {
 		panic(panicNotAligned)
 	}
