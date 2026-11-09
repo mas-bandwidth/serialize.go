@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -1827,5 +1828,45 @@ func TestReadBits64MatchesSplitReads(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestReadStreamSharedArenaThreeIndexSlice reads one packet out of a shared arena while
+// another goroutine writes the next packet into the bytes that follow it. The packet is
+// sliced with a three-index slice, capping its capacity at its length, so the reader
+// takes no window past the packet and never touches the bytes being written. Run under
+// go test -race, which reports any shared access.
+func TestReadStreamSharedArenaThreeIndexSlice(t *testing.T) {
+	arena := make([]byte, 64)
+	for i := range 16 {
+		arena[i] = byte(i + 1)
+	}
+	packet := arena[:16:16]
+	next := arena[16:]
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var lo, hi uint64
+	var err error
+	go func() {
+		defer wg.Done()
+		stream := NewReadStream(packet)
+		stream.SerializeUint64(&lo)
+		stream.SerializeUint64(&hi)
+		err = stream.SerializeEnd()
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range next {
+			next[i] = 0xFF
+		}
+	}()
+	wg.Wait()
+
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if lo != 0x0807060504030201 || hi != 0x100f0e0d0c0b0a09 {
+		t.Fatalf("read %#x %#x", lo, hi)
 	}
 }
