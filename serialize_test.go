@@ -183,7 +183,7 @@ type testData struct {
 	d, e, f              uint32
 	g                    bool
 	numItems             int32
-	items                [maxItems]int32
+	items                [maxItems]uint32
 	floatValue           float32
 	compressedFloatValue float32
 	doubleValue          float64
@@ -214,7 +214,7 @@ func (o *testObject) init() {
 
 	o.data.numItems = maxItems / 2
 	for i := int32(0); i < o.data.numItems; i++ {
-		o.data.items[i] = i + 10
+		o.data.items[i] = uint32(i + 10)
 	}
 
 	o.data.compressedFloatValue = 2.13
@@ -258,9 +258,7 @@ func (o *testObject) Serialize(stream Stream) error {
 		return err
 	}
 	for i := int32(0); i < o.data.numItems; i++ {
-		item := uint32(o.data.items[i])
-		stream.SerializeBits(&item, 8)
-		o.data.items[i] = int32(item)
+		stream.SerializeBits(&o.data.items[i], 8)
 	}
 
 	stream.SerializeFloat32(&o.data.floatValue)
@@ -1335,6 +1333,214 @@ func TestSerializeStringReadDoesNotAliasBuffer(t *testing.T) {
 
 // Re-reading content equal to the string already in *value must keep it without
 // allocating: chat style reads into reused values are allocation free in steady state.
+func TestZeroAllocsConcreteStreams(t *testing.T) {
+	buffer := make([]byte, 512)
+	writeStream := NewWriteStream(buffer)
+	measureStream := NewMeasureStream()
+	cfMaxInt, cfBits, cfDelta := CompressedFloatParams(0, 10, 0.01)
+
+	var (
+		b       = true
+		bits32  = uint32(0x2A)
+		bits64  = uint64(0x023456789ABCDEF0)
+		u8      = uint8(0x7F)
+		u16     = uint16(0x1234)
+		u32     = uint32(0x12345678)
+		u64     = uint64(0x123456789ABCDEF0)
+		i32     = int32(42)
+		i64     = int64(-123456789)
+		rel     = int32(105)
+		f32     = float32(3.25)
+		f64     = float64(6.5)
+		cf      = float32(2.5)
+		cfPre   = float32(7.5)
+		fix64   = int64(256)
+		fix128  = Int128From64(512)
+		u128    = Uint128{Lo: 0x1122334455667788, Hi: 0x99AABBCCDDEEFF00}
+		i128    = Int128From64(-42)
+		i128Min = Int128From64(-1000)
+		i128Max = Int128From64(1000)
+		raw     = make([]byte, 16)
+		str     = "zero-alloc"
+	)
+
+	writeAll := func(s *WriteStream) {
+		s.Reset(buffer)
+		_ = s.SerializeBool(&b)
+		_ = s.SerializeBits(&bits32, 6)
+		_ = s.SerializeBits64(&bits64, 60)
+		_ = s.SerializeUint8(&u8)
+		_ = s.SerializeUint16(&u16)
+		_ = s.SerializeUint32(&u32)
+		_ = s.SerializeUint64(&u64)
+		_ = s.SerializeInt(&i32, -100, 100)
+		_ = s.SerializeInt64(&i64, -1000000000, 1000000000)
+		_ = s.SerializeIntRelative(100, &rel)
+		_ = s.SerializeFloat32(&f32)
+		_ = s.SerializeFloat64(&f64)
+		_ = s.SerializeCompressedFloat32(&cf, 0, 10, 0.01)
+		_ = s.SerializeCompressedFloat32Precomputed(&cfPre, cfMaxInt, cfBits, cfDelta, 0)
+		_ = s.SerializeFixed64(&fix64, 16, 8, -1000, 1000)
+		_ = s.SerializeFixed128(&fix128, 112, 16, -1000, 1000)
+		_ = s.SerializeUint128(&u128)
+		_ = s.SerializeInt128(&i128, i128Min, i128Max)
+		_ = s.SerializeBytes(raw)
+		_ = s.SerializeString(&str, 32)
+		_ = s.SerializeAlign()
+		_ = s.SerializeEnd()
+		s.Flush()
+	}
+
+	measureAll := func(s *MeasureStream) {
+		s.Reset()
+		_ = s.SerializeBool(&b)
+		_ = s.SerializeBits(&bits32, 6)
+		_ = s.SerializeBits64(&bits64, 60)
+		_ = s.SerializeUint8(&u8)
+		_ = s.SerializeUint16(&u16)
+		_ = s.SerializeUint32(&u32)
+		_ = s.SerializeUint64(&u64)
+		_ = s.SerializeInt(&i32, -100, 100)
+		_ = s.SerializeInt64(&i64, -1000000000, 1000000000)
+		_ = s.SerializeIntRelative(100, &rel)
+		_ = s.SerializeFloat32(&f32)
+		_ = s.SerializeFloat64(&f64)
+		_ = s.SerializeCompressedFloat32(&cf, 0, 10, 0.01)
+		_ = s.SerializeCompressedFloat32Precomputed(&cfPre, cfMaxInt, cfBits, cfDelta, 0)
+		_ = s.SerializeFixed64(&fix64, 16, 8, -1000, 1000)
+		_ = s.SerializeFixed128(&fix128, 112, 16, -1000, 1000)
+		_ = s.SerializeUint128(&u128)
+		_ = s.SerializeInt128(&i128, i128Min, i128Max)
+		_ = s.SerializeBytes(raw)
+		_ = s.SerializeString(&str, 32)
+		_ = s.SerializeAlign()
+		_ = s.SerializeEnd()
+	}
+
+	writeAll(writeStream)
+	packet := writeStream.Data()
+	readStream := NewReadStream(packet)
+
+	readAll := func(s *ReadStream) {
+		s.Reset(packet)
+		if err := s.SerializeBool(&b); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeBits(&bits32, 6); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeBits64(&bits64, 60); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint8(&u8); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint16(&u16); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint32(&u32); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint64(&u64); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeInt(&i32, -100, 100); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeInt64(&i64, -1000000000, 1000000000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeIntRelative(100, &rel); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFloat32(&f32); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFloat64(&f64); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeCompressedFloat32(&cf, 0, 10, 0.01); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeCompressedFloat32Precomputed(&cfPre, cfMaxInt, cfBits, cfDelta, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFixed64(&fix64, 16, 8, -1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFixed128(&fix128, 112, 16, -1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint128(&u128); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeInt128(&i128, i128Min, i128Max); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeBytes(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeString(&str, 32); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeAlign(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeEnd(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if allocs := testing.AllocsPerRun(100, func() { writeAll(writeStream) }); allocs != 0 {
+		t.Fatalf("expected 0 allocations on *WriteStream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() { measureAll(measureStream) }); allocs != 0 {
+		t.Fatalf("expected 0 allocations on *MeasureStream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() { readAll(readStream) }); allocs != 0 {
+		t.Fatalf("expected 0 allocations on *ReadStream, got %v", allocs)
+	}
+
+	ctx := &testContext{min: -10, max: +10}
+	writeStream.SetContext(ctx)
+	measureStream.SetContext(ctx)
+	obj := &testObject{}
+	obj.init()
+	writeStream.Reset(buffer)
+	if err := obj.Serialize(writeStream); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+	objPacket := writeStream.Data()
+	readStream.SetContext(ctx)
+
+	if allocs := testing.AllocsPerRun(100, func() {
+		writeStream.Reset(buffer)
+		if err := obj.Serialize(writeStream); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+	}); allocs != 0 {
+		t.Fatalf("expected 0 allocations writing preallocated struct through Stream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() {
+		measureStream.Reset()
+		if err := obj.Serialize(measureStream); err != nil {
+			t.Fatal(err)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected 0 allocations measuring preallocated struct through Stream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() {
+		readStream.Reset(objPacket)
+		if err := obj.Serialize(readStream); err != nil {
+			t.Fatal(err)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected 0 allocations reading preallocated struct through Stream, got %v", allocs)
+	}
+}
+
 func TestSerializeStringReadEqualContentDoesNotAllocate(t *testing.T) {
 	buffer := make([]byte, 64)
 

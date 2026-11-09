@@ -50,7 +50,7 @@ It has the following features:
 * Serialize 128 bit integers: `Uint128` raw at a full 128 bits, `Int128` ranged in only the bits its range needs — and where that range fits 64 bits the bytes are identical to `SerializeInt64`
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
-* Zero allocations on every serialization path, except a read that constructs a string: `SerializeString` allocates the value it hands back when its content changed
+* Zero allocations on the concrete stream types (`*WriteStream`, `*ReadStream`, `*MeasureStream`) and when passing fields of a preallocated struct through `Stream` (passing a local variable by pointer through the `Stream` interface escapes to the heap in Go), except a read that constructs a string: `SerializeString` allocates the value it hands back when its content changed
 * Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking, and every error names the rule that refused the packet. A read stream never panics on a caller's bad declaration either: it refuses it with `ErrValueOutOfRange`
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
@@ -197,10 +197,10 @@ if err := stream.Err(); err != nil {
 }
 ```
 
-For count-driven loops, check the error on the count before looping:
+For count-driven loops, check the error on the count before looping (passing a field of the preallocated struct, such as `&p.numItems`, avoids escaping a local variable through the `Stream` interface):
 
 ```go
-if err := stream.SerializeInt(&numItems, 0, MaxItems); err != nil {
+if err := stream.SerializeInt(&p.numItems, 0, MaxItems); err != nil {
     return err
 }
 ```
@@ -209,7 +209,7 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 # Performance
 
-All serialization paths are zero allocation, with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing. Everything else — every integer, float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
+Calling serialization methods on the concrete stream types (`*WriteStream`, `*ReadStream`, `*MeasureStream`) or passing fields of a preallocated struct through the `Stream` interface performs zero heap allocations (passing a local variable by pointer through the `Stream` interface causes the variable to escape to the heap in Go), with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing. Everything else — every integer, relative int, float, compressed float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
 
 Reads are fastest with at least 12 bytes of slack in the backing array beyond the packet, as when packets are sliced out of one large receive buffer. If another goroutine writes into that buffer while a packet is being read, slice the packet with a three-index slice (`buffer[start:end:end]`): see Limitations.
 
