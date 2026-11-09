@@ -224,6 +224,12 @@ func (w *BitWriter) Data() []byte {
 // A [1,32] field needs an 8 byte window and a [1,64] field a 12 byte one, which is where
 // the 12 comes from.
 //
+// Those loads read up to 12 bytes of the backing array past len(data), up to cap(data).
+// The bytes are never interpreted, but they are read: when another goroutine may write
+// them while the reader runs (packets sliced from one shared buffer and handled
+// concurrently), cap the slice at its length with a three-index slice, data[:n:n]. The
+// reader then sees no slack and loads its final windows from the tail instead.
+//
 // The zero value is an exhausted reader: create one with NewBitReader, or Reset one onto
 // a buffer before use.
 type BitReader struct {
@@ -248,7 +254,9 @@ const (
 
 // NewBitReader creates a bit reader that reads the bitpacked data in the given slice.
 // The slice does not need any particular alignment. Buffer sizes are effectively
-// unlimited, because bit counts are stored in 64 bit signed integers.
+// unlimited, because bit counts are stored in 64 bit signed integers. The reader loads up
+// to 12 backing-array bytes past len(data), up to cap(data): pass data[:n:n] when other
+// goroutines may write the bytes that follow the slice. See BitReader.
 func NewBitReader(data []byte) *BitReader {
 	r := &BitReader{}
 	r.Reset(data)

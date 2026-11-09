@@ -22,6 +22,11 @@ type ReadStream struct {
 // NewReadStream creates a read stream that reads the bitpacked data in the given slice.
 // Any slice length is supported. For the fastest reads, keep at least 12 bytes of slack
 // in the backing array beyond the data: see BitReader for details.
+//
+// The stream loads up to 12 bytes of the backing array past len(data), up to cap(data).
+// When another goroutine may write those bytes while the stream reads (packets sliced
+// from one shared buffer and handled concurrently), cap the slice at its length with a
+// three-index slice, data[:n:n], so the stream touches only the packet's own bytes.
 func NewReadStream(data []byte) *ReadStream {
 	s := &ReadStream{}
 	s.reader.Reset(data)
@@ -30,7 +35,8 @@ func NewReadStream(data []byte) *ReadStream {
 
 // Reset points the stream at a data slice and clears all read state including any
 // latched error, allowing a single stream to be reused without allocation. The context
-// is kept.
+// is kept. Like NewReadStream, it loads up to 12 backing-array bytes past len(data), up
+// to cap(data): pass data[:n:n] when other goroutines may write the bytes that follow.
 func (s *ReadStream) Reset(data []byte) {
 	s.reader.Reset(data)
 	s.err = nil

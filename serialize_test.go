@@ -1841,7 +1841,7 @@ func TestReadStreamSharedArenaThreeIndexSlice(t *testing.T) {
 	for i := range 16 {
 		arena[i] = byte(i + 1)
 	}
-	packet := arena[:16]
+	packet := arena[:16:16]
 	next := arena[16:]
 
 	var wg sync.WaitGroup
