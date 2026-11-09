@@ -1155,9 +1155,9 @@ func TestLargeBuffer(t *testing.T) {
 		if err := readStream.SerializeBytes(readChunk); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if !bytes.Equal(readChunk, chunk) {
-		t.Fatal("the final chunk did not round trip")
+		if !bytes.Equal(readChunk, chunk) {
+			t.Fatal("the final chunk did not round trip")
+		}
 	}
 	var readSentinel uint32
 	if err := readStream.SerializeBits(&readSentinel, 32); err != nil {
