@@ -27,6 +27,9 @@ type ReadStream struct {
 // When another goroutine may write those bytes while the stream reads (packets sliced
 // from one shared buffer and handled concurrently), cap the slice at its length with a
 // three-index slice, data[:n:n], so the stream touches only the packet's own bytes.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func NewReadStream(data []byte) *ReadStream {
 	s := &ReadStream{}
 	s.reader.Reset(data)
@@ -37,6 +40,9 @@ func NewReadStream(data []byte) *ReadStream {
 // latched error, allowing a single stream to be reused without allocation. The context
 // is kept. Like NewReadStream, it loads up to 12 backing-array bytes past len(data), up
 // to cap(data): pass data[:n:n] when other goroutines may write the bytes that follow.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func (s *ReadStream) Reset(data []byte) {
 	s.reader.Reset(data)
 	s.err = nil

@@ -263,6 +263,9 @@ const (
 // unlimited, because bit counts are stored in 64 bit signed integers. The reader loads up
 // to 12 backing-array bytes past len(data), up to cap(data): pass data[:n:n] when other
 // goroutines may write the bytes that follow the slice. See BitReader.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func NewBitReader(data []byte) *BitReader {
 	r := &BitReader{}
 	r.Reset(data)
@@ -279,6 +282,9 @@ func NewBitReader(data []byte) *BitReader {
 //
 // Slack is determined by the supplied slice capacity, not its allocation size.
 // A full slice expression data[:len(data):len(data)] forces the tail path.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
 	r.padded = data[:cap(data)]
