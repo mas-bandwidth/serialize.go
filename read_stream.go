@@ -77,8 +77,8 @@ func (s *ReadStream) SerializeBits(value *uint32, bits int) error {
 	return s.readBits(value, bits)
 }
 
-// SerializeBits64 reads bits into *value. bits must be in [1,64]. Values wider than 32
-// bits are read as the low dword first, then the high remainder.
+// SerializeBits64 reads bits into *value. bits must be in [1,64]. Bits are read
+// from least to most significant as a single 64 bit field.
 func (s *ReadStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
@@ -178,7 +178,7 @@ func (s *ReadStream) SerializeInt128(value *Int128, min, max Int128) error {
 }
 
 // SerializeUint128 reads an unsigned 128 bit integer: the low 64 bit half first,
-// then the high half, each half as the low dword then the high dword.
+// then the high half, each read as one 64 bit field.
 func (s *ReadStream) SerializeUint128(value *Uint128) error {
 	if s.err != nil {
 		return s.err
@@ -272,7 +272,7 @@ func (s *ReadStream) SerializeUint32(value *uint32) error {
 	return s.readBits(value, 32)
 }
 
-// SerializeUint64 reads an unsigned 64 bit integer as the low dword then the high dword.
+// SerializeUint64 reads an unsigned 64 bit integer, least significant bits first.
 func (s *ReadStream) SerializeUint64(value *uint64) error {
 	if s.err != nil {
 		return s.err
