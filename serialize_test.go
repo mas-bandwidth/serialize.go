@@ -1051,10 +1051,11 @@ func TestGoldenWireFormat(t *testing.T) {
 		}
 
 		expected := goldenWireInit()
-		if math.Abs(float64(data.compressedFloatValue-expected.compressedFloatValue)) > 0.01 {
-			t.Fatalf("compressed float mismatch: expected %f, got %f", expected.compressedFloatValue, data.compressedFloatValue)
+		if math.Float32bits(data.compressedFloatValue) != math.Float32bits(expected.compressedFloatValue) {
+			t.Fatalf("compressed float mismatch: expected 0x%08X (%f), got 0x%08X (%f)",
+				math.Float32bits(expected.compressedFloatValue), expected.compressedFloatValue,
+				math.Float32bits(data.compressedFloatValue), data.compressedFloatValue)
 		}
-		data.compressedFloatValue = expected.compressedFloatValue
 		if data != expected {
 			t.Fatalf("golden decode mismatch:\nexpected %+v\ngot      %+v", expected, data)
 		}
