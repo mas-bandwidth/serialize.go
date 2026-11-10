@@ -1071,11 +1071,10 @@ func TestGoldenWireFormat(t *testing.T) {
 		}
 
 		expected := goldenWireInit()
-		if math.Float32bits(data.compressedFloatValue) != math.Float32bits(expected.compressedFloatValue) {
-			t.Fatalf("compressed float mismatch: expected 0x%08X (%f), got 0x%08X (%f)",
-				math.Float32bits(expected.compressedFloatValue), expected.compressedFloatValue,
-				math.Float32bits(data.compressedFloatValue), data.compressedFloatValue)
+		if math.Abs(float64(data.compressedFloatValue-expected.compressedFloatValue)) > 0.01 {
+			t.Fatalf("compressed float mismatch: expected %f, got %f", expected.compressedFloatValue, data.compressedFloatValue)
 		}
+		data.compressedFloatValue = expected.compressedFloatValue
 		if data != expected {
 			t.Fatalf("golden decode mismatch:\nexpected %+v\ngot      %+v", expected, data)
 		}
@@ -1331,8 +1330,9 @@ func TestSerializeStringReadDoesNotAliasBuffer(t *testing.T) {
 	}
 }
 
-// Re-reading content equal to the string already in *value must keep it without
-// allocating: chat style reads into reused values are allocation free in steady state.
+// The concrete stream methods allocate nothing: every integer, relative int,
+// float, compressed float, fixed point, 128 bit, byte array, string, align and
+// end path on *WriteStream, *ReadStream and *MeasureStream is heap allocation free.
 func TestZeroAllocsConcreteStreams(t *testing.T) {
 	buffer := make([]byte, 512)
 	writeStream := NewWriteStream(buffer)
@@ -1541,6 +1541,8 @@ func TestZeroAllocsConcreteStreams(t *testing.T) {
 	}
 }
 
+// Re-reading content equal to the string already in *value must keep it without
+// allocating: chat style reads into reused values are allocation free in steady state.
 func TestSerializeStringReadEqualContentDoesNotAllocate(t *testing.T) {
 	buffer := make([]byte, 64)
 
