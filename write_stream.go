@@ -33,7 +33,7 @@ import (
 type WriteStream struct {
 	data        []byte
 	scratch     uint64 // pending bits: the low bitsWritten&63 bits, above bits zero
-	numBits     int64  // len(data)*8
+	numBits     int64  // len(data)*8, cut to bitsWritten by a Flush that stores a partial word
 	bitsWritten int64
 	context     any
 }
@@ -538,13 +538,18 @@ func (s *WriteStream) SerializeIntRelative(previous int32, current *int32) error
 
 // Flush flushes the last word of bits to memory. Always call this after you finish
 // writing and before you call Data, or you risk truncating the last word of data.
-// The flush ends the write: do not serialize more values after it.
+// The flush ends the write: after a flush that stored a partial word, every write that
+// carries a bit is write misuse and panics as an overflow (IMPLEMENTING.md U11, U9),
+// because its bits would land past the bytes the stream reported.
 func (s *WriteStream) Flush() {
 	if s.bitsWritten&63 != 0 {
 		// the store is a full qword: the buffer size is a multiple of 8 so this
 		// stays in bounds, and bytes past the written data are only ever written
 		// as zeros
 		binary.LittleEndian.PutUint64(s.data[(s.bitsWritten>>3)&^7:], s.scratch)
+		// no room is left, so the bounds check every write already makes is the
+		// trap, and the hot path pays nothing for it
+		s.numBits = s.bitsWritten
 	}
 }
 
