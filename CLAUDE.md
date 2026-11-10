@@ -243,7 +243,13 @@ min >= max to min > max + the STANDARD.md int_relative ladder fix. v2.0.0 format
 (the serialize v2.0.0 standard and corpus): a MAJOR version, so the module path gained
 /v2 (Go semantic import versioning: a v2 tag on the bare path is not fetchable), the
 v1 retractions stay in v1's go.mod, wstring removed, SerializeEnd added to Stream, the
-errors became Refusal values. Release order is release-check.yml's: dispatch it on main
+errors became Refusal values. v2.0.1 the reference pin at v2.0.1 + the object-terminal
+control. v2.1.0 standard 2.1: the rejected reason, Reject/Fail/RefusalName, and the
+uniform rules U1 to U16 (read declarations refuse). v2.1.1 the 2.1.1 rulings: U9 (write
+and measure misuse panics, nothing latches), U6, U15 CopyString. v2.1.2 a flush ends the
+write (U11: a write after a partial flush panics on WriteStream and BitWriter), the read
+side compressed float declaration refusal, Reject/Fail reach a wrapped read stream, the
+cppcompat pin at v2.1.4; same wire. Release order is release-check.yml's: dispatch it on main
 at the release commit, green, THEN tag (the tag push is the publish), then prime the proxy. Tags up
 to v1.2.3 predate the rename and declare the goserialize module path, so they are
 not fetchable as serialize.go — v1.3.0 is the first valid version of the new path
