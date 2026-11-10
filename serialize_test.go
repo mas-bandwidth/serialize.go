@@ -854,9 +854,9 @@ func TestCompressedFloatValidation(t *testing.T) {
 
 // TestCompressedFloatTopOfRangeClamp mirrors the C++
 // test_compressed_float_top_of_range_clamp (mas-bandwidth/serialize#88):
-// STANDARD.md's normative integer clamp (2026-08-23, schema#109; ruling: Glenn,
-// live). In [2^23, 2^24) the float32 ulp is 1, so scaled + 0.5 lands on a tie and
-// round-to-even can push the quantized code past maxIntegerValue. Before the clamp,
+// STANDARD.md's normative integer clamp. In [2^23, 2^24) the float32 ulp is 1,
+// so scaled + 0.5 lands on a tie and round-to-even can push the quantized code past
+// maxIntegerValue. Before the clamp,
 // witness A wrote a top-of-range code its own reader rejected, and witness B wrote
 // a code one bit wider than the field.
 func TestCompressedFloatTopOfRangeClamp(t *testing.T) {
@@ -1255,7 +1255,7 @@ func TestAlignValidation(t *testing.T) {
 }
 
 func TestSerializeStringRoundTrip(t *testing.T) {
-	// the max length vector was 255 NUL bytes before the reader-validation ruling;
+	// the max length vector was 255 NUL bytes before read-side string validation;
 	// interior NUL is now refused on read, so max length is exercised with a
 	// conforming payload of the same length
 	values := []string{"", "a", "hello world!", "héllo wörld 😀", strings.Repeat("x", 255)}
