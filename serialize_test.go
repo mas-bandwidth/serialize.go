@@ -32,6 +32,68 @@ func TestBitWriterWriteAfterFlushPanics(t *testing.T) {
 	}
 }
 
+func TestWriteStreamWriteAfterFlushPanics(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		write func(*WriteStream)
+	}{
+		{"bits", func(s *WriteStream) { v := uint32(0xCD); s.SerializeBits(&v, 8) }},
+		{"bits64", func(s *WriteStream) { v := uint64(0xCD); s.SerializeBits64(&v, 40) }},
+		{"int", func(s *WriteStream) { v := int32(5); s.SerializeInt(&v, 0, 10) }},
+		{"int64", func(s *WriteStream) { v := int64(5); s.SerializeInt64(&v, 0, 1<<40) }},
+		{"uint64", func(s *WriteStream) { v := uint64(0x88); s.SerializeUint64(&v) }},
+		{"uint128", func(s *WriteStream) { v := Uint128{Lo: 1}; s.SerializeUint128(&v) }},
+		{"bool", func(s *WriteStream) { v := true; s.SerializeBool(&v) }},
+		{"bytes", func(s *WriteStream) { s.SerializeBytes([]byte{0xCD}) }},
+		{"bytes nil", func(s *WriteStream) { s.SerializeBytes(nil) }},
+		{"bytes empty", func(s *WriteStream) { s.SerializeBytes([]byte{}) }},
+		{"string", func(s *WriteStream) { v := "cd"; s.SerializeString(&v, 8) }},
+		{"string empty", func(s *WriteStream) { v := ""; s.SerializeString(&v, 1) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stream := NewWriteStream(make([]byte, 32))
+			v := uint32(0xAB)
+			stream.SerializeBits(&v, 8)
+			stream.Flush()
+			defer func() {
+				if got := recover(); got != panicWriteOverflow {
+					t.Fatalf("panic = %v, want %s", got, panicWriteOverflow)
+				}
+			}()
+			test.write(stream)
+		})
+	}
+}
+
+// A flush on a word boundary stores no partial word, and Reset starts a new write: the
+// stream stays writable after either.
+func TestWriteStreamFlushOnWordBoundaryAndResetKeepRoom(t *testing.T) {
+	stream := NewWriteStream(make([]byte, 16))
+	v := uint64(0x1122334455667788)
+	empty := ""
+	stream.SerializeUint64(&v)
+	stream.Flush()
+	stream.SerializeBytes(nil)
+	stream.SerializeString(&empty, 1)
+	stream.SerializeUint64(&v)
+	stream.Flush()
+	if got := stream.Data(); !bytes.Equal(got, []byte{0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11}) {
+		t.Fatalf("data = %x", got)
+	}
+	b := uint32(0xAB)
+	stream.Reset(make([]byte, 16))
+	stream.SerializeBits(&b, 8)
+	stream.Flush()
+	stream.Reset(make([]byte, 16))
+	stream.SerializeBytes(nil)
+	stream.SerializeString(&empty, 1)
+	stream.SerializeUint64(&v)
+	stream.SerializeUint64(&v)
+	if stream.BitsProcessed() != 128 {
+		t.Fatalf("bits processed = %d, want 128", stream.BitsProcessed())
+	}
+}
+
 func TestBitpacker(t *testing.T) {
 	const bufferSize = 256
 

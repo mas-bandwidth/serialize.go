@@ -131,11 +131,12 @@ published only under serialize.go.
 - `int128.go` — the Uint128/Int128 two-lane pair (semantics mirror the C++ emulated
   128 bit types: two's complement wrap, documented shift/division edges)
 - `bitpacker.go` — BitWriter (64 bit scratch, LE qword stores), BitReader (branchless
-  64 bit windows at byte granularity), generic `writeBytes[~[]byte|~string]`
+  64 bit windows at byte granularity)
 - `stream.go` — Stream interface, Serializer, Continue/Until, compressed float params,
   fixed point params, int-relative buckets
 - `write_stream.go` / `read_stream.go` / `measure_stream.go` — the three concrete
-  streams; methods are implemented per stream (no shared dispatch) for speed
+  streams; methods are implemented per stream (no shared dispatch) for speed; the
+  write stream's byte copy is the generic `writeBytesStream[~[]byte|~string]`
 - `serialize_test.go` — ported C++ test suite + golden wire test + DoS termination tests
 - `int128_test.go` — 128 bit pair known-answer tests + differentials against math/big
 - `fixed_test.go` — fixed point + 128 bit stream tests, golden pins derived from STANDARD.md
@@ -145,7 +146,8 @@ published only under serialize.go.
   writer's and measure's end
 - `controls_test.go` — the negative controls: the unknown operation, and one sabotaged
   reader per refusal rule (a needle and patch over a scratch copy of the package, run
-  with `go test -json`), each held to its vendored .expected list; skipped under -short
+  with `go test -json`), each held to its vendored .expected list; skipped unless
+  `SERIALIZE_FUNCTIONAL=1` is set or `-run` names `TestConformanceControls`
 - `compat/` — cross language wire compat harness (`main.go` + `cpp/compat.cpp`, kept
   in lockstep), run by the cppcompat CI job
 - `docs/` — the full treatment of reading untrusted data; the README keeps a
@@ -160,7 +162,9 @@ published only under serialize.go.
 
 ## Commands
 
-- `go test ./...` — full suite (includes a 320MB large-buffer test; `-short` skips it)
+- `go test ./...` — the unit suite (includes a 320MB large-buffer test; `-short` skips it)
+- `SERIALIZE_FUNCTIONAL=1 go test -run '^TestConformanceControls$' .` — the negative
+  controls, which a plain `go test` skips
 - `go test -short -race ./...`
 - `go test -fuzz=FuzzReadStream -fuzztime=30s .` (also FuzzRoundTrip)
 - `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run` —
@@ -239,7 +243,13 @@ min >= max to min > max + the STANDARD.md int_relative ladder fix. v2.0.0 format
 (the serialize v2.0.0 standard and corpus): a MAJOR version, so the module path gained
 /v2 (Go semantic import versioning: a v2 tag on the bare path is not fetchable), the
 v1 retractions stay in v1's go.mod, wstring removed, SerializeEnd added to Stream, the
-errors became Refusal values. Release order is release-check.yml's: dispatch it on main
+errors became Refusal values. v2.0.1 the reference pin at v2.0.1 + the object-terminal
+control. v2.1.0 standard 2.1: the rejected reason, Reject/Fail/RefusalName, and the
+uniform rules U1 to U16 (read declarations refuse). v2.1.1 the 2.1.1 rulings: U9 (write
+and measure misuse panics, nothing latches), U6, U15 CopyString. v2.1.2 a flush ends the
+write (U11: a write after a partial flush panics on WriteStream and BitWriter), the read
+side compressed float declaration refusal, Reject/Fail reach a wrapped read stream, the
+cppcompat pin at v2.1.4; same wire. Release order is release-check.yml's: dispatch it on main
 at the release commit, green, THEN tag (the tag push is the publish), then prime the proxy. Tags up
 to v1.2.3 predate the rename and declare the goserialize module path, so they are
 not fetchable as serialize.go — v1.3.0 is the first valid version of the new path

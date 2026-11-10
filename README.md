@@ -40,6 +40,12 @@ Standard 2.1.1 (still format 2.0, the wire is unchanged) settles write misuse on
 
 Go has no unchecked build, so the trap fires in every run, as the C++ reference's asserts do in a debug build. The read stream is unchanged: it never panics, and every refusal is a value. `WriteStream.Err` and `MeasureStream.Err` always return nil. `Fail` on a write or measure stream returns its error and records nothing, and a nested object whose `Serialize` returns an error on a write or measure makes `SerializeObject` return that error, recorded nowhere. The new `CopyString(source, destSize)` is the reference's `serialize_copy_string`: the longest prefix of `source` that fits a `destSize` byte string buffer without ending inside a character, so you can bound a string before writing it (IMPLEMENTING.md U15).
 
+Release 2.1.2 (still format 2.0, the wire is unchanged; the C++ compatibility gate is pinned to serialize v2.1.4) changes behaviour in three places:
+
+* A flush ends the write (IMPLEMENTING.md U11). After a `WriteStream.Flush` that stored a partial word, any write that carries a bit panics with the overflow trap; after a `BitWriter.FlushBits` that stored a partial word, `WriteBits` and `WriteBytes` panic. A flush on a word boundary, and `Reset`, leave the writer usable.
+* `ReadStream.SerializeCompressedFloat32` refuses a declaration whose `delta` or `delta / resolution` is not finite with `ErrValueOutOfRange` before reading any bits, as the write and measure streams already panic on it.
+* `serialize.Reject` and `serialize.Fail` reach a read stream wrapped in your own `Stream` type, through its `Reject` and `Fail` methods. Before, `Reject` panicked on such a stream and `Fail` returned the reason without recording it.
+
 It has the following features:
 
 * Serialize a bool with only one bit
