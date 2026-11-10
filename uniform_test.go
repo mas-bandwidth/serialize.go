@@ -3,6 +3,7 @@ package serialize
 import (
 	"errors"
 	"math"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -16,8 +17,15 @@ import (
 // starting with "serialize: ". An unintended runtime panic is not a contract trap.
 func panics(f func()) (didPanic bool) {
 	defer func() {
-		msg, ok := recover().(string)
-		didPanic = ok && strings.HasPrefix(msg, "serialize: ")
+		r := recover()
+		if r == nil {
+			return
+		}
+		if msg, ok := r.(string); ok && strings.HasPrefix(msg, "serialize: ") {
+			didPanic = true
+			return
+		}
+		panic(r)
 	}()
 	f()
 	return false
@@ -26,11 +34,24 @@ func panics(f func()) (didPanic bool) {
 // TestPanicsHelperRejectsNonContractPanic is the helper's self-check: an unintended
 // runtime panic must not pass as this package's deliberate contract trap.
 func TestPanicsHelperRejectsNonContractPanic(t *testing.T) {
-	if panics(func() { panic("other") }) {
-		t.Error("panics treated a non-contract panic as a contract trap")
-	}
-	if panics(func() { s := []int{}; i := 1; _ = s[i] }) {
-		t.Error("panics treated a runtime slice panic as a contract trap")
+	for _, tc := range []struct {
+		name  string
+		call  func()
+		match func(any) bool
+	}{
+		{"string", func() { panic("other") }, func(r any) bool { msg, ok := r.(string); return ok && msg == "other" }},
+		{"runtime", func() { s := []int{}; i := 1; _ = s[i] }, func(r any) bool { _, ok := r.(runtime.Error); return ok }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				panics(tc.call)
+			}()
+			if !tc.match(got) {
+				t.Errorf("panics did not propagate the non-contract panic: %v", got)
+			}
+		})
 	}
 	if !panics(func() { panic("serialize: deliberate") }) {
 		t.Error("panics did not recognize a contract trap")
