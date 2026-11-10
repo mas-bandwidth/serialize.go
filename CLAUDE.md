@@ -40,8 +40,9 @@ INVARIANTS
   ErrValueOutOfRange there (IMPLEMENTING.md U7, U16; uniform_test.go). The fuzz targets enforce this.
   **min == max is legal, not misuse**: the degenerate range costs zero bits (STANDARD.md),
   and every stream accepts it — only an inverted range panics. int_relative's `previous`
-  is caller state, not wire data: outside the domain 0..2147483647 it panics too, so never
-  pass a value you just read off the wire.
+  is caller state, not wire data: outside the domain 0..2147483647 it panics on write and
+  measure (`WriteStream`, `MeasureStream`) and refuses with `ErrValueOutOfRange` on read
+  (`ReadStream`), so never pass a value you just read off the wire.
 - **Zero allocations on every serialization path EXCEPT a read that constructs a string.**
   SerializeString allocates only when the content changed. Everything else allocates
   nothing.
@@ -74,7 +75,7 @@ DECISIONS THAT READ AS BUGS
 # serialize.go
 
 Pure Go port of the C++ serialize library (github.com/mas-bandwidth/serialize).
-Module `github.com/mas-bandwidth/serialize.go`, package name `serialize` (deliberate:
+Module `github.com/mas-bandwidth/serialize.go/v2`, package name `serialize` (deliberate:
 short call sites, matches the C++ namespace; no import alias needed, same pattern as
 nats.go). Zero dependencies, no cgo, BSD-3. Renamed from goserialize on 2026-07-12;
 the old module path is frozen — proxy-cached versions keep working, new versions are
@@ -101,8 +102,9 @@ published only under serialize.go.
    degenerate_test.go). The one exception is SerializeCompressedFloat32, which still
    requires a strict min < max — it is not a ranged operation, its quantization divides
    by the range, and STANDARD.md excludes it by name. SerializeIntRelative's `previous`
-   is the third misuse panic: it is the caller's own state, never wire data, and lives in
-   the int_relative domain 0..2147483647.
+   is the caller's own state, never wire data, and lives in the int_relative domain
+   0..2147483647: outside that domain it panics on write and measure (`WriteStream`,
+   `MeasureStream`) and refuses with `ErrValueOutOfRange` on read (`ReadStream`).
 3. **Sticky errors and the control flow rule.** On a read stream the first error
    latches; later serialize calls are no-ops that leave values unmodified. That is
    STANDARD.md's terminal-failure rule satisfied by latch, and only Reset clears it
