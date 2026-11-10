@@ -1887,10 +1887,7 @@ func prefixChunk(bitPos, n int) uint32 {
 
 func writePrefixDirect(w *BitWriter, bits int) {
 	for pos := 0; pos < bits; {
-		n := bits - pos
-		if n > 32 {
-			n = 32
-		}
+		n := min(bits-pos, 32)
 		w.WriteBits(prefixChunk(pos, n), n)
 		pos += n
 	}
@@ -1898,10 +1895,7 @@ func writePrefixDirect(w *BitWriter, bits int) {
 
 func writePrefixStream(s *WriteStream, bits int) error {
 	for pos := 0; pos < bits; {
-		n := bits - pos
-		if n > 32 {
-			n = 32
-		}
+		n := min(bits-pos, 32)
 		v := prefixChunk(pos, n)
 		if err := s.SerializeBits(&v, n); err != nil {
 			return err
@@ -1913,10 +1907,7 @@ func writePrefixStream(s *WriteStream, bits int) error {
 
 func readPrefixDirect(r *BitReader, bits int) error {
 	for pos := 0; pos < bits; {
-		n := bits - pos
-		if n > 32 {
-			n = 32
-		}
+		n := min(bits-pos, 32)
 		if got, want := r.ReadBits(n), prefixChunk(pos, n); got != want {
 			return fmt.Errorf("bit reader prefix at %d: got %#x want %#x", pos, got, want)
 		}
@@ -1927,10 +1918,7 @@ func readPrefixDirect(r *BitReader, bits int) error {
 
 func readPrefixStream(s *ReadStream, bits int) error {
 	for pos := 0; pos < bits; {
-		n := bits - pos
-		if n > 32 {
-			n = 32
-		}
+		n := min(bits-pos, 32)
 		var got uint32
 		if err := s.SerializeBits(&got, n); err != nil {
 			return err
