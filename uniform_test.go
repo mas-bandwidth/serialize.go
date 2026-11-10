@@ -3,6 +3,8 @@ package serialize
 import (
 	"errors"
 	"math"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -11,15 +13,49 @@ import (
 // write-side, measure-side or caller-misuse behaviour, which no stream observes. Each
 // test names the rule it holds.
 
-// panics reports whether f panicked.
+// panics reports whether f panicked with this package's contract trap, a string
+// starting with "serialize: ". An unintended runtime panic is not a contract trap.
 func panics(f func()) (didPanic bool) {
 	defer func() {
-		if recover() != nil {
-			didPanic = true
+		r := recover()
+		if r == nil {
+			return
 		}
+		if msg, ok := r.(string); ok && strings.HasPrefix(msg, "serialize: ") {
+			didPanic = true
+			return
+		}
+		panic(r)
 	}()
 	f()
 	return false
+}
+
+// TestPanicsHelperRejectsNonContractPanic is the helper's self-check: an unintended
+// runtime panic must not pass as this package's deliberate contract trap.
+func TestPanicsHelperRejectsNonContractPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		call  func()
+		match func(any) bool
+	}{
+		{"string", func() { panic("other") }, func(r any) bool { msg, ok := r.(string); return ok && msg == "other" }},
+		{"runtime", func() { s := []int{}; i := 1; _ = s[i] }, func(r any) bool { _, ok := r.(runtime.Error); return ok }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				panics(tc.call)
+			}()
+			if !tc.match(got) {
+				t.Errorf("panics did not propagate the non-contract panic: %v", got)
+			}
+		})
+	}
+	if !panics(func() { panic("serialize: deliberate") }) {
+		t.Error("panics did not recognize a contract trap")
+	}
 }
 
 // TestU7ReadDeclarationMisuseRefuses holds U7 and U16 on the read stream: a bad

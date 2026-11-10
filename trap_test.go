@@ -3,6 +3,8 @@ package serialize
 import (
 	"errors"
 	"math"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -11,15 +13,50 @@ import (
 // This port has no unchecked build, so it traps in every run, and its trap is a Go
 // panic. None of these is a corpus vector: no stream observes a writer's misuse.
 
-// trapped reports whether f panicked, and with what.
+// trapped reports whether f panicked with this package's contract trap, a string
+// starting with "serialize: ", and with what. An unintended runtime panic is not a
+// contract trap.
 func trapped(f func()) (value any, didPanic bool) {
 	defer func() {
-		if r := recover(); r != nil {
-			value, didPanic = r, true
+		r := recover()
+		if r == nil {
+			return
 		}
+		if msg, ok := r.(string); ok && strings.HasPrefix(msg, "serialize: ") {
+			value, didPanic = r, true
+			return
+		}
+		panic(r)
 	}()
 	f()
 	return nil, false
+}
+
+// TestTrappedHelperRejectsNonContractPanic is the helper's self-check: an unintended
+// runtime panic must not pass as this package's deliberate contract trap.
+func TestTrappedHelperRejectsNonContractPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		call  func()
+		match func(any) bool
+	}{
+		{"string", func() { panic("other") }, func(r any) bool { msg, ok := r.(string); return ok && msg == "other" }},
+		{"runtime", func() { s := []int{}; i := 1; _ = s[i] }, func(r any) bool { _, ok := r.(runtime.Error); return ok }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				trapped(tc.call)
+			}()
+			if !tc.match(got) {
+				t.Errorf("trapped did not propagate the non-contract panic: %v", got)
+			}
+		})
+	}
+	if got, ok := trapped(func() { panic("serialize: deliberate") }); !ok || got != "serialize: deliberate" {
+		t.Errorf("trapped did not recognize a contract trap: %v %v", got, ok)
+	}
 }
 
 // writeMisuse is every value misuse the check model names, as one call on a unified
