@@ -414,6 +414,11 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 // bitpacked until the stream reaches a qword boundary, the middle is a straight copy,
 // and the tail is bitpacked again. The bytes are identical to BitWriter's writeBytes.
 func writeBytesStream[T ~[]byte | ~string](s *WriteStream, data T) {
+	// a partial flush ended the write (U11): numBits is otherwise a multiple of 64, so
+	// this holds only after one, and catches the empty payload the room check lets by
+	if s.bitsWritten&63 != 0 && s.bitsWritten == s.numBits {
+		panic(panicWriteOverflow)
+	}
 	if s.bitsWritten%8 != 0 {
 		panic(panicNotAligned)
 	}

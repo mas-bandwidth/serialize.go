@@ -45,7 +45,10 @@ func TestWriteStreamWriteAfterFlushPanics(t *testing.T) {
 		{"uint128", func(s *WriteStream) { v := Uint128{Lo: 1}; s.SerializeUint128(&v) }},
 		{"bool", func(s *WriteStream) { v := true; s.SerializeBool(&v) }},
 		{"bytes", func(s *WriteStream) { s.SerializeBytes([]byte{0xCD}) }},
+		{"bytes nil", func(s *WriteStream) { s.SerializeBytes(nil) }},
+		{"bytes empty", func(s *WriteStream) { s.SerializeBytes([]byte{}) }},
 		{"string", func(s *WriteStream) { v := "cd"; s.SerializeString(&v, 8) }},
+		{"string empty", func(s *WriteStream) { v := ""; s.SerializeString(&v, 1) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stream := NewWriteStream(make([]byte, 32))
@@ -67,8 +70,11 @@ func TestWriteStreamWriteAfterFlushPanics(t *testing.T) {
 func TestWriteStreamFlushOnWordBoundaryAndResetKeepRoom(t *testing.T) {
 	stream := NewWriteStream(make([]byte, 16))
 	v := uint64(0x1122334455667788)
+	empty := ""
 	stream.SerializeUint64(&v)
 	stream.Flush()
+	stream.SerializeBytes(nil)
+	stream.SerializeString(&empty, 1)
 	stream.SerializeUint64(&v)
 	stream.Flush()
 	if got := stream.Data(); !bytes.Equal(got, []byte{0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11}) {
@@ -79,6 +85,8 @@ func TestWriteStreamFlushOnWordBoundaryAndResetKeepRoom(t *testing.T) {
 	stream.SerializeBits(&b, 8)
 	stream.Flush()
 	stream.Reset(make([]byte, 16))
+	stream.SerializeBytes(nil)
+	stream.SerializeString(&empty, 1)
 	stream.SerializeUint64(&v)
 	stream.SerializeUint64(&v)
 	if stream.BitsProcessed() != 128 {
