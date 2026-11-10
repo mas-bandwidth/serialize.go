@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -280,14 +281,140 @@ func failingVectors(t *testing.T, goTool, dir string) []string {
 	return names
 }
 
+// conformanceControlsAsked reports whether this process was asked to run
+// TestConformanceControls. The controls compile a scratch copy of the package
+// once per rule, so a plain go test skips them. SERIALIZE_FUNCTIONAL=1 asks
+// for them, and so does a -test.run pattern that names this test. No -test.run,
+// or an empty one, is the default pattern: it does not ask.
+func conformanceControlsAsked(env string, args []string) bool {
+	if env == "1" {
+		return true
+	}
+	pattern, explicit := testRunPattern(args)
+	if !explicit || pattern == "" {
+		return false
+	}
+	return runPatternNamesTest(pattern, "TestConformanceControls")
+}
+
+// testRunPattern returns the last -test.run value in args. Go forwards an
+// explicit -run as one argument, -test.run=<pattern>. A separate -test.run
+// <pattern> is accepted for a binary started by hand.
+func testRunPattern(args []string) (pattern string, explicit bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		if arg == "-test.run" {
+			explicit = true
+			pattern = ""
+			if i+1 < len(args) {
+				i++
+				pattern = args[i]
+			}
+			continue
+		}
+		const prefix = "-test.run="
+		if strings.HasPrefix(arg, prefix) {
+			explicit = true
+			pattern = arg[len(prefix):]
+		}
+	}
+	return pattern, explicit
+}
+
+// runPatternNamesTest reports whether pattern selects name. -test.run splits on
+// top-level | and then on /, outside brackets and parentheses, and the first
+// segment is an unanchored regexp against the test name. A later segment is a
+// subtest; the parent still runs.
+func runPatternNamesTest(pattern, name string) bool {
+	for _, alt := range splitRunPattern(pattern, '|') {
+		parts := splitRunPattern(alt, '/')
+		if len(parts) == 0 {
+			continue
+		}
+		re, err := regexp.Compile(parts[0])
+		if err != nil {
+			continue
+		}
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitRunPattern splits pattern on sep when it is outside (), [], and escapes.
+func splitRunPattern(pattern string, sep byte) []string {
+	var parts []string
+	brackets, parens := 0, 0
+	start := 0
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '[':
+			brackets++
+		case ']':
+			if brackets > 0 {
+				brackets--
+			}
+		case '(':
+			if brackets == 0 {
+				parens++
+			}
+		case ')':
+			if brackets == 0 && parens > 0 {
+				parens--
+			}
+		case '\\':
+			if i+1 < len(pattern) {
+				i++
+			}
+		default:
+			if pattern[i] == sep && brackets == 0 && parens == 0 {
+				parts = append(parts, pattern[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, pattern[start:])
+}
+
+func TestConformanceControlsRunGate(t *testing.T) {
+	cases := []struct {
+		env  string
+		args []string
+		want bool
+	}{
+		{env: "", args: []string{"pkg.test", "-test.count=1", "-test.timeout=10m0s"}, want: false},
+		{env: "", args: []string{"pkg.test", "-test.run="}, want: false},
+		{env: "", args: []string{"pkg.test", "-test.run=^TestConformanceCorpus$"}, want: false},
+		{env: "", args: []string{"pkg.test", "-test.run=^Nope$", "-test.run=^TestConformanceControls$"}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.run", "^TestConformanceControls$"}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.testlogfile=/tmp/x", "-test.run=^TestConformanceControls$", "-test.v=true"}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.run=TestConformanceControls/align-padding"}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.run=TestOther|TestConformanceControls"}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.run=^TestConformanceControls$"}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.run=."}, want: true},
+		{env: "", args: []string{"pkg.test", "-test.run=^TestConformanceControls$/align-padding"}, want: true},
+		{env: "1", args: []string{"pkg.test", "-test.run=^Nope$"}, want: true},
+		{env: "1", args: []string{"pkg.test"}, want: true},
+	}
+	for _, tc := range cases {
+		if got := conformanceControlsAsked(tc.env, tc.args); got != tc.want {
+			t.Errorf("env %q args %q: got %v want %v", tc.env, tc.args, got, tc.want)
+		}
+	}
+}
+
 // TestConformanceControls runs every sabotaged reader against the corpus and requires
 // its failing vectors to be exactly the vendored list for its rule.
 //
-// It compiles a scratch copy of the package once per control, so it runs in the full
-// suite and is skipped under -short, which is the leg that also carries -race.
+// It compiles a scratch copy of the package once per control. Plain go test skips
+// it. Set SERIALIZE_FUNCTIONAL=1, or pass -run naming this test, to run it.
 func TestConformanceControls(t *testing.T) {
-	if testing.Short() {
-		t.Skip("the sabotage controls compile a scratch copy of the package per rule: run without -short")
+	if !conformanceControlsAsked(os.Getenv("SERIALIZE_FUNCTIONAL"), os.Args) {
+		t.Skip("conformance controls run only when SERIALIZE_FUNCTIONAL=1 or -run names TestConformanceControls")
 	}
 	goTool, err := exec.LookPath("go")
 	if err != nil {

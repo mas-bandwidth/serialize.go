@@ -10,6 +10,28 @@ import (
 	"testing"
 )
 
+func TestBitWriterWriteAfterFlushPanics(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		write func(*BitWriter)
+	}{
+		{"bits", func(w *BitWriter) { w.WriteBits(0xCD, 8) }},
+		{"bytes", func(w *BitWriter) { w.WriteBytes([]byte{0xCD}) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := NewBitWriter(make([]byte, 16))
+			writer.WriteBits(0xAB, 8)
+			writer.FlushBits()
+			defer func() {
+				if got := recover(); got != "serialize: write after flush" {
+					t.Fatalf("panic = %v, want serialize: write after flush", got)
+				}
+			}()
+			test.write(writer)
+		})
+	}
+}
+
 func TestBitpacker(t *testing.T) {
 	const bufferSize = 256
 
@@ -1052,10 +1074,11 @@ func TestGoldenWireFormat(t *testing.T) {
 		}
 
 		expected := goldenWireInit()
-		if math.Abs(float64(data.compressedFloatValue-expected.compressedFloatValue)) > 0.01 {
-			t.Fatalf("compressed float mismatch: expected %f, got %f", expected.compressedFloatValue, data.compressedFloatValue)
+		if math.Float32bits(data.compressedFloatValue) != math.Float32bits(expected.compressedFloatValue) {
+			t.Fatalf("compressed float mismatch: expected 0x%08X (%f), got 0x%08X (%f)",
+				math.Float32bits(expected.compressedFloatValue), expected.compressedFloatValue,
+				math.Float32bits(data.compressedFloatValue), data.compressedFloatValue)
 		}
-		data.compressedFloatValue = expected.compressedFloatValue
 		if data != expected {
 			t.Fatalf("golden decode mismatch:\nexpected %+v\ngot      %+v", expected, data)
 		}
@@ -1156,9 +1179,9 @@ func TestLargeBuffer(t *testing.T) {
 		if err := readStream.SerializeBytes(readChunk); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if !bytes.Equal(readChunk, chunk) {
-		t.Fatal("the final chunk did not round trip")
+		if !bytes.Equal(readChunk, chunk) {
+			t.Fatal("the final chunk did not round trip")
+		}
 	}
 	var readSentinel uint32
 	if err := readStream.SerializeBits(&readSentinel, 32); err != nil {
