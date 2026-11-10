@@ -79,7 +79,8 @@ func (w *BitWriter) writeBits(value uint32, bits int) {
 // nearest byte. A boolean value writes just 1 bit, a value in [0,31] can be written with
 // just 5 bits and so on. bits must be in [1,32], and value must fit in bits: a wider
 // value panics, as the reference's BitWriter asserts (IMPLEMENTING.md U8, U9). Panics if
-// the write would go past the end of the buffer.
+// the write would go past the end of the buffer, or if it follows a FlushBits that
+// stored a partial word (U11).
 //
 // IMPORTANT: When you have finished writing, call FlushBits, otherwise the last word of
 // data will not get flushed to memory!
@@ -153,7 +154,8 @@ func writeBytes(w *BitWriter, data []byte) {
 // a large block of data into your bitstream. Faster than writing each byte via
 // WriteBits(value, 8), because the aligned middle of the data is block copied into the
 // buffer without bitpacking. The writer must be aligned to a byte boundary: call
-// WriteAlign first.
+// WriteAlign first. Panics if the write would go past the end of the buffer, or if it
+// follows a FlushBits that stored a partial word (U11).
 func (w *BitWriter) WriteBytes(data []byte) {
 	writeBytes(w, data)
 }
@@ -163,8 +165,9 @@ func (w *BitWriter) WriteBytes(data []byte) {
 // multiple of 8 so this stays in bounds, and bytes past the written data are only ever
 // written as zeros.
 //
-// FlushBits ends the write: writing more bits after a mid-stream flush corrupts the
-// stream, because the flushed partial word cannot be resumed.
+// FlushBits ends the write: after a flush that stored a partial word, WriteBits and
+// WriteBytes are write misuse and panic (IMPLEMENTING.md U11, U9), because their bits
+// would land past the bytes the writer reports.
 func (w *BitWriter) FlushBits() {
 	if w.scratchBits != 0 {
 		binary.LittleEndian.PutUint64(w.data[w.wordIndex*8:], w.scratch)

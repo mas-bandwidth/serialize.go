@@ -131,11 +131,12 @@ published only under serialize.go.
 - `int128.go` — the Uint128/Int128 two-lane pair (semantics mirror the C++ emulated
   128 bit types: two's complement wrap, documented shift/division edges)
 - `bitpacker.go` — BitWriter (64 bit scratch, LE qword stores), BitReader (branchless
-  64 bit windows at byte granularity), generic `writeBytes[~[]byte|~string]`
+  64 bit windows at byte granularity)
 - `stream.go` — Stream interface, Serializer, Continue/Until, compressed float params,
   fixed point params, int-relative buckets
 - `write_stream.go` / `read_stream.go` / `measure_stream.go` — the three concrete
-  streams; methods are implemented per stream (no shared dispatch) for speed
+  streams; methods are implemented per stream (no shared dispatch) for speed; the
+  write stream's byte copy is the generic `writeBytesStream[~[]byte|~string]`
 - `serialize_test.go` — ported C++ test suite + golden wire test + DoS termination tests
 - `int128_test.go` — 128 bit pair known-answer tests + differentials against math/big
 - `fixed_test.go` — fixed point + 128 bit stream tests, golden pins derived from STANDARD.md
@@ -145,7 +146,8 @@ published only under serialize.go.
   writer's and measure's end
 - `controls_test.go` — the negative controls: the unknown operation, and one sabotaged
   reader per refusal rule (a needle and patch over a scratch copy of the package, run
-  with `go test -json`), each held to its vendored .expected list; skipped under -short
+  with `go test -json`), each held to its vendored .expected list; skipped unless
+  `SERIALIZE_FUNCTIONAL=1` is set or `-run` names `TestConformanceControls`
 - `compat/` — cross language wire compat harness (`main.go` + `cpp/compat.cpp`, kept
   in lockstep), run by the cppcompat CI job
 - `docs/` — the full treatment of reading untrusted data; the README keeps a
@@ -160,7 +162,9 @@ published only under serialize.go.
 
 ## Commands
 
-- `go test ./...` — full suite (includes a 320MB large-buffer test; `-short` skips it)
+- `go test ./...` — the unit suite (includes a 320MB large-buffer test; `-short` skips it)
+- `SERIALIZE_FUNCTIONAL=1 go test -run '^TestConformanceControls$' .` — the negative
+  controls, which a plain `go test` skips
 - `go test -short -race ./...`
 - `go test -fuzz=FuzzReadStream -fuzztime=30s .` (also FuzzRoundTrip)
 - `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run` —
