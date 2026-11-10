@@ -343,12 +343,9 @@ func (s *ReadStream) SerializeFloat64(value *float64) error {
 
 // SerializeCompressedFloat32 reads a quantized floating point value. On success *value
 // is guaranteed to be in [min,max]. It derives the wire constants with
-// CompressedFloatParams, then runs the one audited home of the read-side quantization
-// arithmetic: the two functions are the pre-split body, split at the line schema issue
-// mas-bandwidth/schema#82 names — everything that depends only on the declaration
-// lives in CompressedFloatParams, everything that touches the value or the wire lives
-// in compressedFloat32Precomputed, statement for statement — the same home
-// SerializeCompressedFloat32Precomputed reaches.
+// CompressedFloatParams. Declaration-only calculations live there; value and wire
+// operations live in compressedFloat32Precomputed, shared with
+// SerializeCompressedFloat32Precomputed.
 // TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
 // identity against a frozen copy of the original unsplit implementation.
 func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
