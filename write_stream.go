@@ -25,10 +25,8 @@ import (
 // the current qword's store offset is (bitsWritten>>3)&^7. The bit stream produced is
 // bit-for-bit identical to BitWriter's and to the C++ serialize library.
 //
-// What that buys, stated as measured rather than as intent (go1.27.0, budget 80):
-// tryWriteBits costs 64 and inlines, so a caller that packs directly pays no call.
-// The per-field entry point writeBits wraps it with the past-end trap. ReadStream.readBits
-// is outlined at 106, so the reader still incurs a call.
+// tryWriteBits combines the bounds check and bit packing so callers can inline
+// them together. Inlining decisions depend on the compiler and build flags.
 //
 // The zero value is not usable: create a WriteStream with NewWriteStream, or Reset one
 // onto a buffer before use.
@@ -165,8 +163,8 @@ func (s *WriteStream) SerializeBits(value *uint32, bits int) error {
 }
 
 // SerializeBits64 writes *value in bits bits. bits must be in [1,64], and a value
-// wider than its field panics (U8, U9). Values wider than 32 bits are written as the
-// low dword first, then the high remainder.
+// wider than its field panics (U8, U9). Bits are packed from least to most significant
+// as a single 64 bit field.
 func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
@@ -247,8 +245,8 @@ func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
 }
 
 // SerializeUint128 writes an unsigned 128 bit integer: the low 64 bit half first,
-// then the high half, each half as the low dword then the high dword. When the
-// stream is byte aligned the result is the 16 bytes of the value in little endian
+// then the high half, each packed as one 64 bit field. When the stream is
+// byte aligned the result is the 16 bytes of the value in little endian
 // order.
 func (s *WriteStream) SerializeUint128(value *Uint128) error {
 	s.room(128)
@@ -305,7 +303,7 @@ func (s *WriteStream) SerializeUint32(value *uint32) error {
 	return s.writeBits(*value, 32)
 }
 
-// SerializeUint64 writes an unsigned 64 bit integer as the low dword then the high dword.
+// SerializeUint64 writes an unsigned 64 bit integer, least significant bits first.
 func (s *WriteStream) SerializeUint64(value *uint64) error {
 	return s.writeBits64(*value, 64)
 }

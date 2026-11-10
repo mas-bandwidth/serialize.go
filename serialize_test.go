@@ -3,11 +3,34 @@ package serialize
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestBitWriterWriteAfterFlushPanics(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		write func(*BitWriter)
+	}{
+		{"bits", func(w *BitWriter) { w.WriteBits(0xCD, 8) }},
+		{"bytes", func(w *BitWriter) { w.WriteBytes([]byte{0xCD}) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := NewBitWriter(make([]byte, 16))
+			writer.WriteBits(0xAB, 8)
+			writer.FlushBits()
+			defer func() {
+				if got := recover(); got != "serialize: write after flush" {
+					t.Fatalf("panic = %v, want serialize: write after flush", got)
+				}
+			}()
+			test.write(writer)
+		})
+	}
+}
 
 func TestBitpacker(t *testing.T) {
 	const bufferSize = 256
@@ -161,7 +184,7 @@ type testData struct {
 	d, e, f              uint32
 	g                    bool
 	numItems             int32
-	items                [maxItems]int32
+	items                [maxItems]uint32
 	floatValue           float32
 	compressedFloatValue float32
 	doubleValue          float64
@@ -192,7 +215,7 @@ func (o *testObject) init() {
 
 	o.data.numItems = maxItems / 2
 	for i := int32(0); i < o.data.numItems; i++ {
-		o.data.items[i] = i + 10
+		o.data.items[i] = uint32(i + 10)
 	}
 
 	o.data.compressedFloatValue = 2.13
@@ -236,9 +259,7 @@ func (o *testObject) Serialize(stream Stream) error {
 		return err
 	}
 	for i := int32(0); i < o.data.numItems; i++ {
-		item := uint32(o.data.items[i])
-		stream.SerializeBits(&item, 8)
-		o.data.items[i] = int32(item)
+		stream.SerializeBits(&o.data.items[i], 8)
 	}
 
 	stream.SerializeFloat32(&o.data.floatValue)
@@ -1051,10 +1072,11 @@ func TestGoldenWireFormat(t *testing.T) {
 		}
 
 		expected := goldenWireInit()
-		if math.Abs(float64(data.compressedFloatValue-expected.compressedFloatValue)) > 0.01 {
-			t.Fatalf("compressed float mismatch: expected %f, got %f", expected.compressedFloatValue, data.compressedFloatValue)
+		if math.Float32bits(data.compressedFloatValue) != math.Float32bits(expected.compressedFloatValue) {
+			t.Fatalf("compressed float mismatch: expected 0x%08X (%f), got 0x%08X (%f)",
+				math.Float32bits(expected.compressedFloatValue), expected.compressedFloatValue,
+				math.Float32bits(data.compressedFloatValue), data.compressedFloatValue)
 		}
-		data.compressedFloatValue = expected.compressedFloatValue
 		if data != expected {
 			t.Fatalf("golden decode mismatch:\nexpected %+v\ngot      %+v", expected, data)
 		}
@@ -1063,7 +1085,7 @@ func TestGoldenWireFormat(t *testing.T) {
 
 func TestUnalignedWriter(t *testing.T) {
 	// buffers do not need any particular alignment: exercise every offset within a qword,
-	// covering the WriteBits, WriteBytes and FlushBits store paths
+	// covering the WriteStream SerializeBits, SerializeBytes, and Flush store paths
 	storage := make([]byte, 256+8)
 
 	for offset := range 8 {
@@ -1155,9 +1177,9 @@ func TestLargeBuffer(t *testing.T) {
 		if err := readStream.SerializeBytes(readChunk); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if !bytes.Equal(readChunk, chunk) {
-		t.Fatal("the final chunk did not round trip")
+		if !bytes.Equal(readChunk, chunk) {
+			t.Fatal("the final chunk did not round trip")
+		}
 	}
 	var readSentinel uint32
 	if err := readStream.SerializeBits(&readSentinel, 32); err != nil {
@@ -1307,6 +1329,217 @@ func TestSerializeStringReadDoesNotAliasBuffer(t *testing.T) {
 	}
 	if value != "FIRST MESSAGE" {
 		t.Fatalf("expected %q, got %q", "FIRST MESSAGE", value)
+	}
+}
+
+// The concrete stream methods allocate nothing: every integer, relative int,
+// float, compressed float, fixed point, 128 bit, byte array, string, align and
+// end path on *WriteStream, *ReadStream and *MeasureStream is heap allocation free.
+func TestZeroAllocsConcreteStreams(t *testing.T) {
+	buffer := make([]byte, 512)
+	writeStream := NewWriteStream(buffer)
+	measureStream := NewMeasureStream()
+	cfMaxInt, cfBits, cfDelta := CompressedFloatParams(0, 10, 0.01)
+
+	var (
+		b       = true
+		bits32  = uint32(0x2A)
+		bits64  = uint64(0x023456789ABCDEF0)
+		u8      = uint8(0x7F)
+		u16     = uint16(0x1234)
+		u32     = uint32(0x12345678)
+		u64     = uint64(0x123456789ABCDEF0)
+		i32     = int32(42)
+		i64     = int64(-123456789)
+		rel     = int32(105)
+		f32     = float32(3.25)
+		f64     = float64(6.5)
+		cf      = float32(2.5)
+		cfPre   = float32(7.5)
+		fix64   = int64(256)
+		fix128  = Int128From64(512)
+		u128    = Uint128{Lo: 0x1122334455667788, Hi: 0x99AABBCCDDEEFF00}
+		i128    = Int128From64(-42)
+		i128Min = Int128From64(-1000)
+		i128Max = Int128From64(1000)
+		raw     = make([]byte, 16)
+		str     = "zero-alloc"
+	)
+
+	writeAll := func(s *WriteStream) {
+		s.Reset(buffer)
+		_ = s.SerializeBool(&b)
+		_ = s.SerializeBits(&bits32, 6)
+		_ = s.SerializeBits64(&bits64, 60)
+		_ = s.SerializeUint8(&u8)
+		_ = s.SerializeUint16(&u16)
+		_ = s.SerializeUint32(&u32)
+		_ = s.SerializeUint64(&u64)
+		_ = s.SerializeInt(&i32, -100, 100)
+		_ = s.SerializeInt64(&i64, -1000000000, 1000000000)
+		_ = s.SerializeIntRelative(100, &rel)
+		_ = s.SerializeFloat32(&f32)
+		_ = s.SerializeFloat64(&f64)
+		_ = s.SerializeCompressedFloat32(&cf, 0, 10, 0.01)
+		_ = s.SerializeCompressedFloat32Precomputed(&cfPre, cfMaxInt, cfBits, cfDelta, 0)
+		_ = s.SerializeFixed64(&fix64, 16, 8, -1000, 1000)
+		_ = s.SerializeFixed128(&fix128, 112, 16, -1000, 1000)
+		_ = s.SerializeUint128(&u128)
+		_ = s.SerializeInt128(&i128, i128Min, i128Max)
+		_ = s.SerializeBytes(raw)
+		_ = s.SerializeString(&str, 32)
+		_ = s.SerializeAlign()
+		_ = s.SerializeEnd()
+		s.Flush()
+	}
+
+	measureAll := func(s *MeasureStream) {
+		s.Reset()
+		_ = s.SerializeBool(&b)
+		_ = s.SerializeBits(&bits32, 6)
+		_ = s.SerializeBits64(&bits64, 60)
+		_ = s.SerializeUint8(&u8)
+		_ = s.SerializeUint16(&u16)
+		_ = s.SerializeUint32(&u32)
+		_ = s.SerializeUint64(&u64)
+		_ = s.SerializeInt(&i32, -100, 100)
+		_ = s.SerializeInt64(&i64, -1000000000, 1000000000)
+		_ = s.SerializeIntRelative(100, &rel)
+		_ = s.SerializeFloat32(&f32)
+		_ = s.SerializeFloat64(&f64)
+		_ = s.SerializeCompressedFloat32(&cf, 0, 10, 0.01)
+		_ = s.SerializeCompressedFloat32Precomputed(&cfPre, cfMaxInt, cfBits, cfDelta, 0)
+		_ = s.SerializeFixed64(&fix64, 16, 8, -1000, 1000)
+		_ = s.SerializeFixed128(&fix128, 112, 16, -1000, 1000)
+		_ = s.SerializeUint128(&u128)
+		_ = s.SerializeInt128(&i128, i128Min, i128Max)
+		_ = s.SerializeBytes(raw)
+		_ = s.SerializeString(&str, 32)
+		_ = s.SerializeAlign()
+		_ = s.SerializeEnd()
+	}
+
+	writeAll(writeStream)
+	packet := writeStream.Data()
+	readStream := NewReadStream(packet)
+
+	readAll := func(s *ReadStream) {
+		s.Reset(packet)
+		if err := s.SerializeBool(&b); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeBits(&bits32, 6); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeBits64(&bits64, 60); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint8(&u8); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint16(&u16); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint32(&u32); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint64(&u64); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeInt(&i32, -100, 100); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeInt64(&i64, -1000000000, 1000000000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeIntRelative(100, &rel); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFloat32(&f32); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFloat64(&f64); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeCompressedFloat32(&cf, 0, 10, 0.01); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeCompressedFloat32Precomputed(&cfPre, cfMaxInt, cfBits, cfDelta, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFixed64(&fix64, 16, 8, -1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeFixed128(&fix128, 112, 16, -1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeUint128(&u128); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeInt128(&i128, i128Min, i128Max); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeBytes(raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeString(&str, 32); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeAlign(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SerializeEnd(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if allocs := testing.AllocsPerRun(100, func() { writeAll(writeStream) }); allocs != 0 {
+		t.Fatalf("expected 0 allocations on *WriteStream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() { measureAll(measureStream) }); allocs != 0 {
+		t.Fatalf("expected 0 allocations on *MeasureStream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() { readAll(readStream) }); allocs != 0 {
+		t.Fatalf("expected 0 allocations on *ReadStream, got %v", allocs)
+	}
+
+	ctx := &testContext{min: -10, max: +10}
+	writeStream.SetContext(ctx)
+	measureStream.SetContext(ctx)
+	obj := &testObject{}
+	obj.init()
+	writeStream.Reset(buffer)
+	if err := obj.Serialize(writeStream); err != nil {
+		t.Fatal(err)
+	}
+	writeStream.Flush()
+	objPacket := writeStream.Data()
+	readStream.SetContext(ctx)
+
+	if allocs := testing.AllocsPerRun(100, func() {
+		writeStream.Reset(buffer)
+		if err := obj.Serialize(writeStream); err != nil {
+			t.Fatal(err)
+		}
+		writeStream.Flush()
+	}); allocs != 0 {
+		t.Fatalf("expected 0 allocations writing preallocated struct through Stream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() {
+		measureStream.Reset()
+		if err := obj.Serialize(measureStream); err != nil {
+			t.Fatal(err)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected 0 allocations measuring preallocated struct through Stream, got %v", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() {
+		readStream.Reset(objPacket)
+		if err := obj.Serialize(readStream); err != nil {
+			t.Fatal(err)
+		}
+	}); allocs != 0 {
+		t.Fatalf("expected 0 allocations reading preallocated struct through Stream, got %v", allocs)
 	}
 }
 
@@ -1869,4 +2102,229 @@ func TestReadStreamSharedArenaThreeIndexSlice(t *testing.T) {
 	if lo != 0x0807060504030201 || hi != 0x100f0e0d0c0b0a09 {
 		t.Fatalf("read %#x %#x", lo, hi)
 	}
+}
+
+// prefixChunk is the value written at bitPos for the next n bits of the direct sweep.
+// BitWriter and WriteStream both write these chunks, so the packets can be compared
+// byte for byte.
+func prefixChunk(bitPos, n int) uint32 {
+	var v uint32
+	for i := range n {
+		if (bitPos+i)%5 != 0 {
+			v |= 1 << i
+		}
+	}
+	return v
+}
+
+func writePrefixDirect(w *BitWriter, bits int) {
+	for pos := 0; pos < bits; {
+		n := min(bits-pos, 32)
+		w.WriteBits(prefixChunk(pos, n), n)
+		pos += n
+	}
+}
+
+func writePrefixStream(s *WriteStream, bits int) error {
+	for pos := 0; pos < bits; {
+		n := min(bits-pos, 32)
+		v := prefixChunk(pos, n)
+		if err := s.SerializeBits(&v, n); err != nil {
+			return err
+		}
+		pos += n
+	}
+	return nil
+}
+
+func readPrefixDirect(r *BitReader, bits int) error {
+	for pos := 0; pos < bits; {
+		n := min(bits-pos, 32)
+		if got, want := r.ReadBits(n), prefixChunk(pos, n); got != want {
+			return fmt.Errorf("bit reader prefix at %d: got %#x want %#x", pos, got, want)
+		}
+		pos += n
+	}
+	return nil
+}
+
+func readPrefixStream(s *ReadStream, bits int) error {
+	for pos := 0; pos < bits; {
+		n := min(bits-pos, 32)
+		var got uint32
+		if err := s.SerializeBits(&got, n); err != nil {
+			return err
+		}
+		if want := prefixChunk(pos, n); got != want {
+			return fmt.Errorf("read stream prefix at %d: got %#x want %#x", pos, got, want)
+		}
+		pos += n
+	}
+	return nil
+}
+
+// TestBitPackerDirectSweep drives BitWriter and BitReader across prefix lengths and
+// byte payloads, and checks that the bytes match WriteStream and ReadStream.
+func TestBitPackerDirectSweep(t *testing.T) {
+	const bufferSize = 128
+	capBits := int64(bufferSize) * 8
+	directBuf := make([]byte, bufferSize)
+	streamBuf := make([]byte, bufferSize)
+
+	writer := NewBitWriter(directBuf)
+	if writer.BitsWritten() != 0 || writer.BytesWritten() != 0 || writer.BitsAvailable() != capBits {
+		t.Fatal("bad state from NewBitWriter")
+	}
+
+	for prefix := 0; prefix <= 70; prefix++ {
+		for nbytes := 0; nbytes <= 40; nbytes++ {
+			payload := make([]byte, nbytes)
+			for i := range payload {
+				payload[i] = byte(prefix*3 + i*17 + 1)
+			}
+
+			clear(directBuf)
+			clear(streamBuf)
+			writer.Reset(directBuf)
+			writer.WriteBits(^uint32(0)>>(32-17), 17)
+			writer.Reset(directBuf)
+			if writer.BitsWritten() != 0 || writer.BytesWritten() != 0 || writer.BitsAvailable() != capBits {
+				t.Fatalf("prefix %d bytes %d: Reset did not clear the writer", prefix, nbytes)
+			}
+
+			writePrefixDirect(writer, prefix)
+			if writer.BitsWritten() != int64(prefix) || writer.BitsAvailable() != capBits-int64(prefix) {
+				t.Fatalf("prefix %d bytes %d: after prefix bits=%d available=%d", prefix, nbytes, writer.BitsWritten(), writer.BitsAvailable())
+			}
+
+			writer.WriteAlign()
+			align := (8 - prefix%8) % 8
+			afterAlign := int64(prefix + align)
+			if writer.BitsWritten() != afterAlign || writer.BitsAvailable() != capBits-afterAlign {
+				t.Fatalf("prefix %d bytes %d: after WriteAlign bits=%d available=%d", prefix, nbytes, writer.BitsWritten(), writer.BitsAvailable())
+			}
+
+			writer.WriteBytes(payload)
+			expectBits := afterAlign + int64(nbytes)*8
+			expectBytes := (expectBits + 7) / 8
+			if writer.BitsWritten() != expectBits || writer.BytesWritten() != expectBytes || writer.BitsAvailable() != capBits-expectBits {
+				t.Fatalf("prefix %d bytes %d: after WriteBytes bits=%d bytes=%d available=%d", prefix, nbytes, writer.BitsWritten(), writer.BytesWritten(), writer.BitsAvailable())
+			}
+
+			writer.FlushBits()
+			if writer.BitsWritten() != expectBits || writer.BytesWritten() != expectBytes {
+				t.Fatalf("prefix %d bytes %d: FlushBits changed the counters", prefix, nbytes)
+			}
+			packet := writer.Data()
+			if int64(len(packet)) != writer.BytesWritten() {
+				t.Fatalf("prefix %d bytes %d: Data length %d, BytesWritten %d", prefix, nbytes, len(packet), writer.BytesWritten())
+			}
+
+			stream := NewWriteStream(streamBuf)
+			if err := writePrefixStream(stream, prefix); err != nil {
+				t.Fatalf("prefix %d bytes %d: stream prefix: %v", prefix, nbytes, err)
+			}
+			if err := stream.SerializeAlign(); err != nil {
+				t.Fatalf("prefix %d bytes %d: stream align: %v", prefix, nbytes, err)
+			}
+			if err := stream.SerializeBytes(payload); err != nil {
+				t.Fatalf("prefix %d bytes %d: stream bytes: %v", prefix, nbytes, err)
+			}
+			stream.Flush()
+			if stream.BitsProcessed() != expectBits || stream.BytesProcessed() != expectBytes {
+				t.Fatalf("prefix %d bytes %d: stream bits=%d bytes=%d", prefix, nbytes, stream.BitsProcessed(), stream.BytesProcessed())
+			}
+			if !bytes.Equal(packet, stream.Data()) {
+				t.Fatalf("prefix %d bytes %d: packet mismatch\n direct %x\n stream %x", prefix, nbytes, packet, stream.Data())
+			}
+			if !bytes.Equal(directBuf, streamBuf) {
+				t.Fatalf("prefix %d bytes %d: buffer mismatch\n direct %x\n stream %x", prefix, nbytes, directBuf, streamBuf)
+			}
+
+			exact := packet[:len(packet):len(packet)]
+			slackStore := make([]byte, len(packet)+16)
+			copy(slackStore, packet)
+			slack := slackStore[:len(packet)]
+			for _, shape := range []struct {
+				name string
+				data []byte
+			}{
+				{name: "exact", data: exact},
+				{name: "slack", data: slack},
+			} {
+				reader := NewBitReader(shape.data)
+				if err := checkDirectRead(reader, prefix, payload, expectBits); err != nil {
+					t.Fatalf("prefix %d bytes %d: %s: %v", prefix, nbytes, shape.name, err)
+				}
+				reader.Reset(shape.data)
+				if err := checkDirectRead(reader, prefix, payload, expectBits); err != nil {
+					t.Fatalf("prefix %d bytes %d: %s after Reset: %v", prefix, nbytes, shape.name, err)
+				}
+			}
+
+			readStream := NewReadStream(exact)
+			if err := checkStreamRead(readStream, prefix, payload, expectBits, expectBytes); err != nil {
+				t.Fatalf("prefix %d bytes %d: read stream: %v", prefix, nbytes, err)
+			}
+			readStream.Reset(exact)
+			if err := checkStreamRead(readStream, prefix, payload, expectBits, expectBytes); err != nil {
+				t.Fatalf("prefix %d bytes %d: read stream after Reset: %v", prefix, nbytes, err)
+			}
+		}
+	}
+}
+
+func checkDirectRead(reader *BitReader, prefix int, payload []byte, expectBits int64) error {
+	if reader.BitsRead() != 0 {
+		return fmt.Errorf("reader BitsRead %d, want 0", reader.BitsRead())
+	}
+	if err := readPrefixDirect(reader, prefix); err != nil {
+		return err
+	}
+	if !reader.ReadAlign() {
+		return errors.New("ReadAlign rejected zero padding")
+	}
+	got := make([]byte, len(payload))
+	reader.ReadBytes(got)
+	if !bytes.Equal(got, payload) {
+		return fmt.Errorf("ReadBytes got %x want %x", got, payload)
+	}
+	if reader.BitsRead() != expectBits {
+		return fmt.Errorf("BitsRead %d, want %d", reader.BitsRead(), expectBits)
+	}
+	remain := reader.BitsRemaining()
+	if remain != 0 {
+		return fmt.Errorf("BitsRemaining %d, want 0", remain)
+	}
+	// WouldReadPastEnd is the overflow check: the bits still in the packet fit, and one more does not.
+	if reader.WouldReadPastEnd(int(remain)) {
+		return errors.New("overflow check rejected the remaining bits")
+	}
+	if !reader.WouldReadPastEnd(int(remain) + 1) {
+		return errors.New("overflow check accepted a bit past the end")
+	}
+	return nil
+}
+
+func checkStreamRead(stream *ReadStream, prefix int, payload []byte, expectBits, expectBytes int64) error {
+	if stream.BitsProcessed() != 0 {
+		return fmt.Errorf("read stream BitsProcessed %d, want 0", stream.BitsProcessed())
+	}
+	if err := readPrefixStream(stream, prefix); err != nil {
+		return err
+	}
+	if err := stream.SerializeAlign(); err != nil {
+		return err
+	}
+	got := make([]byte, len(payload))
+	if err := stream.SerializeBytes(got); err != nil {
+		return err
+	}
+	if !bytes.Equal(got, payload) {
+		return fmt.Errorf("SerializeBytes got %x want %x", got, payload)
+	}
+	if stream.BitsProcessed() != expectBits || stream.BytesProcessed() != expectBytes {
+		return fmt.Errorf("read stream bits %d bytes %d, want %d %d", stream.BitsProcessed(), stream.BytesProcessed(), expectBits, expectBytes)
+	}
+	return nil
 }
