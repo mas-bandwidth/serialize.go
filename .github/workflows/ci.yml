@@ -97,6 +97,10 @@ jobs:
       - run: go vet ./...
       - run: go test -short -race -shuffle=on ./...
       - run: go test -shuffle=on ./...
+      # The controls compile a scratch copy of the package once per rule, so
+      # the suite above skips them unless it is asked. This step asks.
+      - shell: bash
+        run: SERIALIZE_FUNCTIONAL=1 go test -v -count=1 -run '^TestConformanceControls$' .
 
   lint:
     runs-on: ubuntu-latest
