@@ -110,11 +110,11 @@ func (w *BitWriter) WriteAlign() {
 	}
 }
 
-// writeBytes copies a run of bytes into the bit stream from either a byte slice or a
-// string, without bitpacking the aligned middle section. The writer must be aligned to a
+// writeBytes copies a byte slice into the bit stream without bitpacking the aligned
+// middle section. The writer must be aligned to a
 // byte boundary. Head bytes are bitpacked until the stream reaches a qword boundary, the
 // middle is a straight copy, and the tail is bitpacked again.
-func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
+func writeBytes(w *BitWriter, data []byte) {
 	if int64(w.scratchBits) != w.bitsWritten%64 {
 		panic("serialize: write after flush")
 	}
