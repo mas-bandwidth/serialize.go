@@ -25,18 +25,15 @@ import (
 // the current qword's store offset is (bitsWritten>>3)&^7. The bit stream produced is
 // bit-for-bit identical to BitWriter's and to the C++ serialize library.
 //
-// What that buys, stated as measured rather than as intent (go1.27.0, budget 80):
-// tryWriteBits costs 64 and inlines, so a caller that packs directly pays no call.
-// The per-field entry point writeBits wraps it with the past-end trap. ReadStream.readBits
-// is outlined at 106. Closing that gap is a live question (mas-bandwidth/schema#170's
-// B1); nothing here should be read as claiming it is already closed.
+// tryWriteBits combines the bounds check and bit packing so callers can inline
+// them together. Inlining decisions depend on the compiler and build flags.
 //
 // The zero value is not usable: create a WriteStream with NewWriteStream, or Reset one
 // onto a buffer before use.
 type WriteStream struct {
 	data        []byte
 	scratch     uint64 // pending bits: the low bitsWritten&63 bits, above bits zero
-	numBits     int64  // len(data)*8
+	numBits     int64  // len(data)*8, cut to bitsWritten by a Flush that stores a partial word
 	bitsWritten int64
 	context     any
 }
@@ -166,8 +163,8 @@ func (s *WriteStream) SerializeBits(value *uint32, bits int) error {
 }
 
 // SerializeBits64 writes *value in bits bits. bits must be in [1,64], and a value
-// wider than its field panics (U8, U9). Values wider than 32 bits are written as the
-// low dword first, then the high remainder.
+// wider than its field panics (U8, U9). Bits are packed from least to most significant
+// as a single 64 bit field.
 func (s *WriteStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		panic(panicBitsRange64)
@@ -248,8 +245,8 @@ func (s *WriteStream) SerializeInt128(value *Int128, min, max Int128) error {
 }
 
 // SerializeUint128 writes an unsigned 128 bit integer: the low 64 bit half first,
-// then the high half, each half as the low dword then the high dword. When the
-// stream is byte aligned the result is the 16 bytes of the value in little endian
+// then the high half, each packed as one 64 bit field. When the stream is
+// byte aligned the result is the 16 bytes of the value in little endian
 // order.
 func (s *WriteStream) SerializeUint128(value *Uint128) error {
 	s.room(128)
@@ -306,7 +303,7 @@ func (s *WriteStream) SerializeUint32(value *uint32) error {
 	return s.writeBits(*value, 32)
 }
 
-// SerializeUint64 writes an unsigned 64 bit integer as the low dword then the high dword.
+// SerializeUint64 writes an unsigned 64 bit integer, least significant bits first.
 func (s *WriteStream) SerializeUint64(value *uint64) error {
 	return s.writeBits64(*value, 64)
 }
@@ -340,12 +337,9 @@ func (s *WriteStream) SerializeFloat64(value *float64) error {
 
 // SerializeCompressedFloat32 quantizes *value into [min,max] at the given resolution and
 // writes only the bits required for the quantized range. It derives the wire constants
-// with CompressedFloatParams, then runs the one audited home of the write-side
-// quantization arithmetic: the two functions are the pre-split body, split at the line
-// schema issue mas-bandwidth/schema#82 names — everything that depends only on the
-// declaration lives in CompressedFloatParams, everything that touches the value or the
-// wire lives in compressedFloat32Precomputed, statement for statement — the same home
-// SerializeCompressedFloat32Precomputed reaches.
+// with CompressedFloatParams. Declaration-only calculations live there; value and wire
+// operations live in compressedFloat32Precomputed, shared with
+// SerializeCompressedFloat32Precomputed.
 // TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
 // identity against a frozen copy of the original unsplit implementation.
 func (s *WriteStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
@@ -402,8 +396,7 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 	// agrees, so CI on x86 stays green while Apple Silicon emits different
 	// bytes. Do not "simplify" this.
 	integerValue := uint32(math.Floor(float64(float32(normalizedValue*float32(maxIntegerValue)) + 0.5)))
-	// STANDARD.md: the integer clamp is normative (2026-08-23, schema#109; the C++
-	// C++ implementation merged it in mas-bandwidth/serialize#88). Once maxIntegerValue >= 2^23
+	// STANDARD.md requires the integer clamp. Once maxIntegerValue >= 2^23
 	// the float32 ulp at the top of the range reaches 1, so the rounded sum can exceed
 	// maxIntegerValue itself: the writer emits a code its own reader rejects, or one
 	// bit wider than the field. Clamping after the floor closes both and changes no
@@ -421,6 +414,11 @@ func (s *WriteStream) compressedFloat32Precomputed(value *float32, maxIntegerVal
 // bitpacked until the stream reaches a qword boundary, the middle is a straight copy,
 // and the tail is bitpacked again. The bytes are identical to BitWriter's writeBytes.
 func writeBytesStream[T ~[]byte | ~string](s *WriteStream, data T) {
+	// a partial flush ended the write (U11): numBits is otherwise a multiple of 64, so
+	// this holds only after one, and catches the empty payload the room check lets by
+	if s.bitsWritten&63 != 0 && s.bitsWritten == s.numBits {
+		panic(panicWriteOverflow)
+	}
 	if s.bitsWritten%8 != 0 {
 		panic(panicNotAligned)
 	}
@@ -545,13 +543,18 @@ func (s *WriteStream) SerializeIntRelative(previous int32, current *int32) error
 
 // Flush flushes the last word of bits to memory. Always call this after you finish
 // writing and before you call Data, or you risk truncating the last word of data.
-// The flush ends the write: do not serialize more values after it.
+// The flush ends the write: after a flush that stored a partial word, every write that
+// carries a bit is write misuse and panics as an overflow (IMPLEMENTING.md U11, U9),
+// because its bits would land past the bytes the stream reported.
 func (s *WriteStream) Flush() {
 	if s.bitsWritten&63 != 0 {
 		// the store is a full qword: the buffer size is a multiple of 8 so this
 		// stays in bounds, and bytes past the written data are only ever written
 		// as zeros
 		binary.LittleEndian.PutUint64(s.data[(s.bitsWritten>>3)&^7:], s.scratch)
+		// no room is left, so the bounds check every write already makes is the
+		// trap, and the hot path pays nothing for it
+		s.numBits = s.bitsWritten
 	}
 }
 

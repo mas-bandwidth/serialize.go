@@ -218,6 +218,11 @@ func Fail(stream Stream, reason Refusal) error {
 	if reader, ok := stream.(*ReadStream); ok {
 		return reader.Fail(reason)
 	}
+	if !stream.IsWriting() {
+		if failer, ok := stream.(interface{ Fail(Refusal) error }); ok {
+			return failer.Fail(reason)
+		}
+	}
 	return closedRefusal(reason)
 }
 
@@ -231,7 +236,16 @@ func Reject(stream Stream) error {
 	if reader, ok := stream.(*ReadStream); ok {
 		return reader.Reject()
 	}
-	panic(panicRejectOnWrite)
+	if stream.IsWriting() || !stream.IsReading() {
+		panic(panicRejectOnWrite)
+	}
+	if rejecter, ok := stream.(interface{ Reject() error }); ok {
+		return rejecter.Reject()
+	}
+	if failer, ok := stream.(interface{ Fail(Refusal) error }); ok {
+		return failer.Fail(ErrRejected)
+	}
+	return ErrRejected
 }
 
 // Panic messages for write and measure misuse. These indicate programmer error, never

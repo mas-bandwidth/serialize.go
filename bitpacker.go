@@ -79,11 +79,15 @@ func (w *BitWriter) writeBits(value uint32, bits int) {
 // nearest byte. A boolean value writes just 1 bit, a value in [0,31] can be written with
 // just 5 bits and so on. bits must be in [1,32], and value must fit in bits: a wider
 // value panics, as the reference's BitWriter asserts (IMPLEMENTING.md U8, U9). Panics if
-// the write would go past the end of the buffer.
+// the write would go past the end of the buffer, or if it follows a FlushBits that
+// stored a partial word (U11).
 //
 // IMPORTANT: When you have finished writing, call FlushBits, otherwise the last word of
 // data will not get flushed to memory!
 func (w *BitWriter) WriteBits(value uint32, bits int) {
+	if int64(w.scratchBits) != w.bitsWritten%64 {
+		panic("serialize: write after flush")
+	}
 	if bits < 1 || bits > 32 {
 		panic(panicBitsRange)
 	}
@@ -107,11 +111,14 @@ func (w *BitWriter) WriteAlign() {
 	}
 }
 
-// writeBytes copies a run of bytes into the bit stream from either a byte slice or a
-// string, without bitpacking the aligned middle section. The writer must be aligned to a
+// writeBytes copies a byte slice into the bit stream without bitpacking the aligned
+// middle section. The writer must be aligned to a
 // byte boundary. Head bytes are bitpacked until the stream reaches a qword boundary, the
 // middle is a straight copy, and the tail is bitpacked again.
-func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
+func writeBytes(w *BitWriter, data []byte) {
+	if int64(w.scratchBits) != w.bitsWritten%64 {
+		panic("serialize: write after flush")
+	}
 	if w.bitsWritten%8 != 0 {
 		panic(panicNotAligned)
 	}
@@ -147,7 +154,8 @@ func writeBytes[T ~[]byte | ~string](w *BitWriter, data T) {
 // a large block of data into your bitstream. Faster than writing each byte via
 // WriteBits(value, 8), because the aligned middle of the data is block copied into the
 // buffer without bitpacking. The writer must be aligned to a byte boundary: call
-// WriteAlign first.
+// WriteAlign first. Panics if the write would go past the end of the buffer, or if it
+// follows a FlushBits that stored a partial word (U11).
 func (w *BitWriter) WriteBytes(data []byte) {
 	writeBytes(w, data)
 }
@@ -157,8 +165,9 @@ func (w *BitWriter) WriteBytes(data []byte) {
 // multiple of 8 so this stays in bounds, and bytes past the written data are only ever
 // written as zeros.
 //
-// FlushBits ends the write: writing more bits after a mid-stream flush corrupts the
-// stream, because the flushed partial word cannot be resumed.
+// FlushBits ends the write: after a flush that stored a partial word, WriteBits and
+// WriteBytes are write misuse and panic (IMPLEMENTING.md U11, U9), because their bits
+// would land past the bytes the writer reports.
 func (w *BitWriter) FlushBits() {
 	if w.scratchBits != 0 {
 		binary.LittleEndian.PutUint64(w.data[w.wordIndex*8:], w.scratch)
@@ -224,6 +233,12 @@ func (w *BitWriter) Data() []byte {
 // A [1,32] field needs an 8 byte window and a [1,64] field a 12 byte one, which is where
 // the 12 comes from.
 //
+// Those loads read up to 12 bytes of the backing array past len(data), up to cap(data).
+// The bytes are never interpreted, but they are read: when another goroutine may write
+// them while the reader runs (packets sliced from one shared buffer and handled
+// concurrently), cap the slice at its length with a three-index slice, data[:n:n]. The
+// reader then sees no slack and loads its final windows from the tail instead.
+//
 // The zero value is an exhausted reader: create one with NewBitReader, or Reset one onto
 // a buffer before use.
 type BitReader struct {
@@ -248,7 +263,12 @@ const (
 
 // NewBitReader creates a bit reader that reads the bitpacked data in the given slice.
 // The slice does not need any particular alignment. Buffer sizes are effectively
-// unlimited, because bit counts are stored in 64 bit signed integers.
+// unlimited, because bit counts are stored in 64 bit signed integers. The reader loads up
+// to 12 backing-array bytes past len(data), up to cap(data): pass data[:n:n] when other
+// goroutines may write the bytes that follow the slice. See BitReader.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func NewBitReader(data []byte) *BitReader {
 	r := &BitReader{}
 	r.Reset(data)
@@ -263,12 +283,11 @@ func NewBitReader(data []byte) *BitReader {
 // degenerate min==max range) reaches readBits64 with byteIndex == len(data), so the
 // widest window a legal read can ask for needs len+12 <= cap.
 //
-// The cost of that threshold, stated because it is the one user-visible change: a buffer
-// with 7 to 11 bytes of slack now takes the tail path where it previously did not, which
-// costs one predictable branch per read AND a fillTail copy on every Reset (measured
-// 0.61 -> 3.51 ns). Arena-sliced buffers — the documented shape — have ample slack and
-// are unaffected; the band is reached by make([]byte, n) where n falls just under a size
-// class (n = 41..47 giving cap 48, n = 1017 giving cap 1024).
+// Slack is determined by the supplied slice capacity, not its allocation size.
+// A full slice expression data[:len(data):len(data)] forces the tail path.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func (r *BitReader) Reset(data []byte) {
 	r.data = data
 	r.padded = data[:cap(data)]
@@ -292,13 +311,10 @@ func (r *BitReader) fillTail() {
 
 // tryReadBits bounds checks and reads bits that have already been validated to [1,32],
 // reporting false if the read would go past the end of the buffer. It exists so stream
-// wrappers can fuse the bounds check and the window load into their own bodies: both
-// this and readBits stay within the compiler's inlining budget.
+// wrappers can inline the bounds check and window load into their own bodies.
 //
-// MEASURED go1.27.0, budget 80: readBits costs 64, this costs EXACTLY 80. This body is
-// one unit from falling out of inline, and nothing goes red when it does — the code
-// keeps working and every caller silently pays a call. Any edit here re-measures with
-// `go build -gcflags=-m -m` before landing.
+// Inlining decisions depend on the compiler and build flags; inspect compiler
+// diagnostics when changing this hot path.
 func (r *BitReader) tryReadBits(bits int) (uint32, bool) {
 	if r.bitsRead+int64(bits) > r.numBits {
 		return 0, false

@@ -8,6 +8,8 @@
 
 It is a pure Go port of the C++ [serialize](https://github.com/mas-bandwidth/serialize) library, with no native code. The two libraries produce bit-for-bit identical output, so streams written by one language can be read by the other. This is pinned down by a golden wire format test whose bytes are the whole message STANDARD.md prints, the same bytes the C++ test suite pins.
 
+If you would rather not write serialize functions by hand, [Schema](https://github.com/mas-bandwidth/schema) generates them for Go and many other languages from one definition of your data. The packet code it generates for Go uses this library as its runtime.
+
 The wire format is specified in [STANDARD.md](STANDARD.md), vendored here verbatim from the [serialize](https://github.com/mas-bandwidth/serialize) repository along with the shared conformance corpus in [conformance/](conformance); CI fails if any copy drifts from upstream. **This library implements format version 2.0**: the wire carries only integers and bytes, and every value has exactly one encoding. Every vector in the corpus runs through the read stream in `TestConformanceCorpus`, which discovers the directory rather than naming its files: a vector whose operation it cannot drive fails the run, and a refused vector must be refused for the reason it states. Vectors marked `writer = canonical` are re-emitted through the write stream and compared byte for byte, vectors carrying `writer_input` hand the writer that input and compare its bytes, and vectors carrying `measure_at_least` are checked against the measure stream's floor. `TestConformanceControls` proves the runner responds: for each refusal rule it runs a reader with that one rule deleted against the corpus, and requires it to fail exactly the vectors [conformance-controls/](conformance-controls) names.
 
 Format 2.0 is a major version of this module, `github.com/mas-bandwidth/serialize.go/v2`. What changed from 1.1, and what it breaks:
@@ -40,6 +42,12 @@ Standard 2.1.1 (still format 2.0, the wire is unchanged) settles write misuse on
 
 Go has no unchecked build, so the trap fires in every run, as the C++ reference's asserts do in a debug build. The read stream is unchanged: it never panics, and every refusal is a value. `WriteStream.Err` and `MeasureStream.Err` always return nil. `Fail` on a write or measure stream returns its error and records nothing, and a nested object whose `Serialize` returns an error on a write or measure makes `SerializeObject` return that error, recorded nowhere. The new `CopyString(source, destSize)` is the reference's `serialize_copy_string`: the longest prefix of `source` that fits a `destSize` byte string buffer without ending inside a character, so you can bound a string before writing it (IMPLEMENTING.md U15).
 
+Release 2.1.2 (still format 2.0, the wire is unchanged; the C++ compatibility gate is pinned to serialize v2.1.4) changes behaviour in three places:
+
+* A flush ends the write (IMPLEMENTING.md U11). After a `WriteStream.Flush` that stored a partial word, any write that carries a bit panics with the overflow trap; after a `BitWriter.FlushBits` that stored a partial word, `WriteBits` and `WriteBytes` panic. A flush on a word boundary, and `Reset`, leave the writer usable.
+* `ReadStream.SerializeCompressedFloat32` refuses a declaration whose `delta` or `delta / resolution` is not finite with `ErrValueOutOfRange` before reading any bits, as the write and measure streams already panic on it.
+* `serialize.Reject` and `serialize.Fail` reach a read stream wrapped in your own `Stream` type, through its `Reject` and `Fail` methods. Before, `Reject` panicked on such a stream and `Fail` returned the reason without recording it.
+
 It has the following features:
 
 * Serialize a bool with only one bit
@@ -50,7 +58,7 @@ It has the following features:
 * Serialize 128 bit integers: `Uint128` raw at a full 128 bits, `Int128` ranged in only the bits its range needs — and where that range fits 64 bits the bytes are identical to `SerializeInt64`
 * Alignment support so you can align your bitstream to a byte boundary whenever you want
 * Unified serialization through the `Stream` interface, so you can write one function that handles read, write and measure
-* Zero allocations on every serialization path, except a read that constructs a string: `SerializeString` allocates the value it hands back when its content changed
+* Zero allocations on the concrete stream types (`*WriteStream`, `*ReadStream`, `*MeasureStream`) and when passing fields of a preallocated struct through `Stream` (passing a local variable by pointer through the `Stream` interface escapes to the heap in Go), except a read that constructs a string: `SerializeString` allocates the value it hands back when its content changed
 * Every read is bounds checked and range validated, so maliciously crafted packets fail with errors instead of panicking, and every error names the rule that refused the packet. A read stream never panics on a caller's bad declaration either: it refuses it with `ErrValueOutOfRange`
 
 If this library helps you, **[please support it](https://www.patreon.com/MasBandwidth/membership)**
@@ -197,10 +205,10 @@ if err := stream.Err(); err != nil {
 }
 ```
 
-For count-driven loops, check the error on the count before looping:
+For count-driven loops, check the error on the count before looping (passing a field of the preallocated struct, such as `&p.numItems`, avoids escaping a local variable through the `Stream` interface):
 
 ```go
-if err := stream.SerializeInt(&numItems, 0, MaxItems); err != nil {
+if err := stream.SerializeInt(&p.numItems, 0, MaxItems); err != nil {
     return err
 }
 ```
@@ -209,12 +217,15 @@ The failure modes, why both sentinel polarities exist, and why loops that follow
 
 # Performance
 
-All serialization paths are zero allocation, with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing. Everything else — every integer, float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
+Calling serialization methods on the concrete stream types (`*WriteStream`, `*ReadStream`, `*MeasureStream`) or passing fields of a preallocated struct through the `Stream` interface performs zero heap allocations (passing a local variable by pointer through the `Stream` interface causes the variable to escape to the heap in Go), with one exception: a read that constructs a string allocates it. `SerializeString` allocates only when the incoming bytes differ from what `*value` already holds, so re-reading stable strings into the same value costs nothing. Everything else — every integer, relative int, float, compressed float, fixed point, 128 bit, byte array and align path, on all three streams — allocates nothing. Benchmarking for the serialize family lives in [mas-bandwidth/schema](https://github.com/mas-bandwidth/schema)'s data-driven bench, which measures the generated codecs across every language on one corpus.
+
+Reads are fastest with at least 12 bytes of slack in the backing array beyond the packet, as when packets are sliced out of one large receive buffer. If another goroutine writes into that buffer while a packet is being read, slice the packet with a three-index slice (`buffer[start:end:end]`): see Limitations.
 
 # Limitations
 
 * Write buffer sizes must be a multiple of 8 bytes, because the bit writer flushes qwords to memory. Bytes past the end of the written data are only ever written as zeros. Buffers do not need any particular alignment.
 * Read buffers may be any number of bytes. For the fastest reads, keep at least 12 bytes of slack in the backing array beyond the packet data — for example, read packets into a large buffer and slice the packet out of it. The reader detects the slack via `cap()` and takes one branch per window load, selecting the window source: with slack, every load comes straight from the buffer; without slack, reads near the end of the buffer load their window from a small zero padded tail copied at `Reset`. Slack (or padding) bytes are loaded but never interpreted. (This number is 12 since v1.14.0 and was 7 through v1.13.0, because the 64 bit window load now reaches twelve bytes.)
+* The reader loads up to 12 bytes of the backing array past `len(data)`, up to `cap(data)`. Those bytes are never interpreted, but they are read, so if another goroutine may write them while the packet is read (for example, the next packet being received into the same buffer), cap the packet's capacity at its length with a three-index slice, `data[:n:n]`. The reader then sees no slack and loads its final windows from the zero padded tail, touching only the packet's own bytes.
 * Buffer sizes are effectively unlimited, because bit counts are stored in 64 bit signed integers.
 * `SerializeIntRelative` works in the `int_relative` domain, 0 to 2147483647 (STANDARD.md). `previous` is your own state and never arrives off the wire, so on write and measure a negative `previous`, or a `current` not above it, is API misuse and panics; on read a negative `previous` refuses with `ErrValueOutOfRange`. On read the reconstruction is checked in every tier: a value that leaves the domain, or that does not exceed `previous`, fails with `ErrValueOutOfRange` and leaves the destination unwritten.
 * `SerializeIntRelative`'s absolute tier carries only differences above 69914, the last bounded tier's top: one that carries a smaller difference has a second encoding, and fails with `ErrNonCanonical`.

@@ -3,23 +3,59 @@ package serialize
 import (
 	"errors"
 	"math"
+	"runtime"
+	"strings"
 	"testing"
 )
 
-// The uniform behaviour rules, IMPLEMENTING.md U1 to U16 (reference v2.1.0), and the
+// The uniform behaviour rules, IMPLEMENTING.md U1 to U16 (reference v2.1.2), and the
 // writer check model they enforce. None of these is a corpus vector: each is
 // write-side, measure-side or caller-misuse behaviour, which no stream observes. Each
 // test names the rule it holds.
 
-// panics reports whether f panicked.
+// panics reports whether f panicked with this package's contract trap, a string
+// starting with "serialize: ". An unintended runtime panic is not a contract trap.
 func panics(f func()) (didPanic bool) {
 	defer func() {
-		if recover() != nil {
-			didPanic = true
+		r := recover()
+		if r == nil {
+			return
 		}
+		if msg, ok := r.(string); ok && strings.HasPrefix(msg, "serialize: ") {
+			didPanic = true
+			return
+		}
+		panic(r)
 	}()
 	f()
 	return false
+}
+
+// TestPanicsHelperRejectsNonContractPanic is the helper's self-check: an unintended
+// runtime panic must not pass as this package's deliberate contract trap.
+func TestPanicsHelperRejectsNonContractPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		call  func()
+		match func(any) bool
+	}{
+		{"string", func() { panic("other") }, func(r any) bool { msg, ok := r.(string); return ok && msg == "other" }},
+		{"runtime", func() { s := []int{}; i := 1; _ = s[i] }, func(r any) bool { _, ok := r.(runtime.Error); return ok }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got any
+			func() {
+				defer func() { got = recover() }()
+				panics(tc.call)
+			}()
+			if !tc.match(got) {
+				t.Errorf("panics did not propagate the non-contract panic: %v", got)
+			}
+		})
+	}
+	if !panics(func() { panic("serialize: deliberate") }) {
+		t.Error("panics did not recognize a contract trap")
+	}
 }
 
 // TestU7ReadDeclarationMisuseRefuses holds U7 and U16 on the read stream: a bad
@@ -49,6 +85,14 @@ func TestU7ReadDeclarationMisuseRefuses(t *testing.T) {
 		"cf resolution NaN": func(r *ReadStream) error {
 			v := float32(7)
 			return r.SerializeCompressedFloat32(&v, 0, 1, float32(math.NaN()))
+		},
+		"cf delta not finite": func(r *ReadStream) error {
+			v := float32(7)
+			return r.SerializeCompressedFloat32(&v, -3e38, 3e38, 1)
+		},
+		"cf values not finite": func(r *ReadStream) error {
+			v := float32(7)
+			return r.SerializeCompressedFloat32(&v, 0, 1e30, 1e-30)
 		},
 		"precomputed bits": func(r *ReadStream) error {
 			v := float32(7)
@@ -102,6 +146,41 @@ func TestU7ReadDeclarationMisuseLeavesValue(t *testing.T) {
 	_ = r.SerializeString(&s, 0)
 	if v != 7 || s != "keep" {
 		t.Fatalf("a refused declaration wrote the destination: %d %q", v, s)
+	}
+}
+
+// TestU7ReadCompressedFloatDeclarationRefusedBeforeReading holds the timing half of U7
+// on compressed_float: a declaration whose delta or delta / resolution is not finite in
+// float32 is refused before any bits are read, so a short or empty stream reports the
+// declaration's reason, value_out_of_range, not past_end.
+func TestU7ReadCompressedFloatDeclarationRefusedBeforeReading(t *testing.T) {
+	declarations := map[string][3]float32{
+		"delta not finite":  {-3e38, 3e38, 1},
+		"values not finite": {0, 1e30, 1e-30},
+	}
+	buffers := map[string][]byte{
+		"four bytes": {0x78, 0x56, 0x34, 0x12},
+		"empty":      nil,
+	}
+	for declName, declaration := range declarations {
+		for bufName, data := range buffers {
+			t.Run(declName+"/"+bufName, func(t *testing.T) {
+				v := float32(7)
+				r := NewReadStream(data)
+				if panics(func() { _ = r.SerializeCompressedFloat32(&v, declaration[0], declaration[1], declaration[2]) }) {
+					t.Fatalf("a bad declaration on read panicked; U7 requires a refusal")
+				}
+				if !errors.Is(r.Err(), ErrValueOutOfRange) {
+					t.Fatalf("got %v, want value_out_of_range", r.Err())
+				}
+				if r.BitsProcessed() != 0 {
+					t.Fatalf("read %d bits before refusing the declaration", r.BitsProcessed())
+				}
+				if v != 7 {
+					t.Fatalf("a refused declaration wrote the destination: %v", v)
+				}
+			})
+		}
 	}
 }
 
@@ -259,9 +338,9 @@ func TestU10WholeOperationRoom(t *testing.T) {
 	}
 }
 
-// TestCompressedFloatDecodeIsMinPlusDelta pins the read contract the doc now states
-// (audit ledger, go M1): a successful read lies in [min, min + delta], where delta is
-// max - min rounded in float32, and that can exceed max. Over [-1, 16777218] at
+// TestCompressedFloatDecodeIsMinPlusDelta checks that a successful read lies in
+// [min, min + delta], where delta is max - min rounded in float32, and that can
+// exceed max. Over [-1, 16777218] at
 // resolution 1, delta rounds up to 16777220 and the top integer decodes to 16777219
 // rounded, 16777220, above max. The decode is the STANDARD.md arithmetic and is
 // correct; the 2.1 vector compressed-float-top-integer-decodes-above-max-by-delta-rounding

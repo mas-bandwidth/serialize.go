@@ -162,8 +162,9 @@ type Stream interface {
 
 	// SerializeIntRelative serializes an integer relative to a previous integer, using
 	// fewer bits the closer the two values are. Both values live in the int_relative
-	// domain, 0 to 2147483647: previous outside it is API misuse and panics, and a read
-	// that reconstructs a current outside it, or one not greater than previous, fails.
+	// domain, 0 to 2147483647. A previous outside it panics on WriteStream and
+	// MeasureStream; ReadStream refuses it with ErrValueOutOfRange. A read also
+	// refuses a reconstructed current outside the domain or not greater than previous.
 	SerializeIntRelative(previous int32, current *int32) error
 
 	// AlignBits returns the number of bits required to align the stream to the next byte

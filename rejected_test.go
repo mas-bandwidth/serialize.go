@@ -135,3 +135,34 @@ func TestRejectOnWriteAndMeasure(t *testing.T) {
 		t.Fatalf("the package Reject on a reader returned %v and latched %v", err, r.Err())
 	}
 }
+
+type wrappedReadStream struct {
+	*ReadStream
+}
+
+func TestRejectAndFailWrappedReadStream(t *testing.T) {
+	r1 := NewReadStream([]byte{0x05, 0xAB})
+	w1 := wrappedReadStream{ReadStream: r1}
+	if err := Reject(w1); !errors.Is(err, ErrRejected) {
+		t.Fatalf("Reject on wrapped ReadStream returned %v, want rejected", err)
+	}
+	if !errors.Is(r1.Err(), ErrRejected) {
+		t.Fatalf("wrapped ReadStream latched %v, want rejected", r1.Err())
+	}
+	var v uint32
+	if err := w1.SerializeBits(&v, 4); !errors.Is(err, ErrRejected) {
+		t.Fatalf("read after Reject on wrapped ReadStream returned %v, want rejected", err)
+	}
+
+	r2 := NewReadStream([]byte{0x05, 0xAB})
+	w2 := wrappedReadStream{ReadStream: r2}
+	if err := Fail(w2, ErrValueOutOfRange); !errors.Is(err, ErrValueOutOfRange) {
+		t.Fatalf("Fail on wrapped ReadStream returned %v, want value_out_of_range", err)
+	}
+	if !errors.Is(r2.Err(), ErrValueOutOfRange) {
+		t.Fatalf("wrapped ReadStream latched %v, want value_out_of_range", r2.Err())
+	}
+	if err := w2.SerializeBits(&v, 4); !errors.Is(err, ErrValueOutOfRange) {
+		t.Fatalf("read after Fail on wrapped ReadStream returned %v, want value_out_of_range", err)
+	}
+}

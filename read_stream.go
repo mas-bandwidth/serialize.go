@@ -22,6 +22,14 @@ type ReadStream struct {
 // NewReadStream creates a read stream that reads the bitpacked data in the given slice.
 // Any slice length is supported. For the fastest reads, keep at least 12 bytes of slack
 // in the backing array beyond the data: see BitReader for details.
+//
+// The stream loads up to 12 bytes of the backing array past len(data), up to cap(data).
+// When another goroutine may write those bytes while the stream reads (packets sliced
+// from one shared buffer and handled concurrently), cap the slice at its length with a
+// three-index slice, data[:n:n], so the stream touches only the packet's own bytes.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func NewReadStream(data []byte) *ReadStream {
 	s := &ReadStream{}
 	s.reader.Reset(data)
@@ -30,7 +38,11 @@ func NewReadStream(data []byte) *ReadStream {
 
 // Reset points the stream at a data slice and clears all read state including any
 // latched error, allowing a single stream to be reused without allocation. The context
-// is kept.
+// is kept. Like NewReadStream, it loads up to 12 backing-array bytes past len(data), up
+// to cap(data): pass data[:n:n] when other goroutines may write the bytes that follow.
+//
+// The caller's input slice is retained and must not be modified between New or Reset
+// and the last read.
 func (s *ReadStream) Reset(data []byte) {
 	s.reader.Reset(data)
 	s.err = nil
@@ -71,8 +83,8 @@ func (s *ReadStream) SerializeBits(value *uint32, bits int) error {
 	return s.readBits(value, bits)
 }
 
-// SerializeBits64 reads bits into *value. bits must be in [1,64]. Values wider than 32
-// bits are read as the low dword first, then the high remainder.
+// SerializeBits64 reads bits into *value. bits must be in [1,64]. Bits are read
+// from least to most significant as a single 64 bit field.
 func (s *ReadStream) SerializeBits64(value *uint64, bits int) error {
 	if bits < 1 || bits > 64 {
 		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
@@ -172,7 +184,7 @@ func (s *ReadStream) SerializeInt128(value *Int128, min, max Int128) error {
 }
 
 // SerializeUint128 reads an unsigned 128 bit integer: the low 64 bit half first,
-// then the high half, each half as the low dword then the high dword.
+// then the high half, each read as one 64 bit field.
 func (s *ReadStream) SerializeUint128(value *Uint128) error {
 	if s.err != nil {
 		return s.err
@@ -266,7 +278,7 @@ func (s *ReadStream) SerializeUint32(value *uint32) error {
 	return s.readBits(value, 32)
 }
 
-// SerializeUint64 reads an unsigned 64 bit integer as the low dword then the high dword.
+// SerializeUint64 reads an unsigned 64 bit integer, least significant bits first.
 func (s *ReadStream) SerializeUint64(value *uint64) error {
 	if s.err != nil {
 		return s.err
@@ -331,12 +343,9 @@ func (s *ReadStream) SerializeFloat64(value *float64) error {
 
 // SerializeCompressedFloat32 reads a quantized floating point value. On success *value
 // is guaranteed to be in [min,max]. It derives the wire constants with
-// CompressedFloatParams, then runs the one audited home of the read-side quantization
-// arithmetic: the two functions are the pre-split body, split at the line schema issue
-// mas-bandwidth/schema#82 names — everything that depends only on the declaration
-// lives in CompressedFloatParams, everything that touches the value or the wire lives
-// in compressedFloat32Precomputed, statement for statement — the same home
-// SerializeCompressedFloat32Precomputed reaches.
+// CompressedFloatParams. Declaration-only calculations live there; value and wire
+// operations live in compressedFloat32Precomputed, shared with
+// SerializeCompressedFloat32Precomputed.
 // TestCompressedFloatPrecomputedDifferential holds this composition to byte and bit
 // identity against a frozen copy of the original unsplit implementation.
 func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolution float32) error {
@@ -344,6 +353,15 @@ func (s *ReadStream) SerializeCompressedFloat32(value *float32, min, max, resolu
 		return s.fail(ErrValueOutOfRange) // a bad declaration (U7, U16); fail keeps a first reason
 	}
 	maxIntegerValue, bits, delta := compressedFloatParams(min, max, resolution)
+	// A declaration whose delta or delta / resolution is not finite in float32 has no
+	// derivable wire constants: refuse it before reading any bits, exactly where the
+	// write and measure streams' check model panics. The check is here rather than in
+	// compressedFloatDeclarationValid so that CompressedFloatParams keeps deriving the
+	// constants it can: only the read stream has a stream state to refuse.
+	if !float32BitsAreFinite(math.Float32bits(delta)) ||
+		!float32BitsAreFinite(math.Float32bits(delta/resolution)) {
+		return s.fail(ErrValueOutOfRange) // a non-finite declaration (U7, U16); fail keeps a first reason
+	}
 	// no validation on this path: the constants come straight out of
 	// CompressedFloatParams, so they are correct by construction. Only constants
 	// supplied by a caller can be wrong, and those enter through the exported
